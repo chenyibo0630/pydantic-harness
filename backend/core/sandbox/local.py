@@ -1,0 +1,324 @@
+"""LocalSandbox — local filesystem sandbox with virtual path mapping.
+
+Maps /workspace/ virtual paths to a real workspace directory.
+All tool operations are confined within the workspace boundary.
+"""
+
+import locale
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+from backend.core.sandbox.base import Sandbox
+from backend.core.sandbox.exceptions import (
+    CommandError,
+    FileNotFoundError_,
+    PathDeniedError,
+    ToolError,
+)
+
+_VIRTUAL_PREFIX = "/workspace"
+_READ_MAX_LINES = 200
+_MAX_OUTPUT = 8000
+_MAX_SEARCH_RESULTS = 200
+_MAX_CONTEXT_LINES = 5
+
+_IGNORED_NAMES: set[str] = {
+    # VCS
+    ".git", ".svn", ".hg",
+    # Dependencies
+    "node_modules", "__pycache__", ".venv", "venv", "site-packages",
+    # Build output
+    "dist", "build", ".next", ".nuxt", "target", "out",
+    # IDE
+    ".idea", ".vscode",
+    # OS generated
+    ".DS_Store", "Thumbs.db",
+    # Cache / test artifacts
+    ".cache", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
+    # Egg info
+    ".egg-info",
+}
+
+_BINARY_EXTENSIONS: set[str] = {
+    ".pyc", ".pyo", ".so", ".dll", ".exe", ".bin",
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
+    ".zip", ".tar", ".gz", ".whl",
+    ".pdf", ".woff", ".woff2", ".ttf", ".eot",
+}
+
+
+class LocalSandbox(Sandbox):
+    """Local filesystem sandbox confined to a workspace directory."""
+
+    def __init__(self, workspace: str) -> None:
+        self._workspace = Path(workspace).resolve()
+        if not self._workspace.exists():
+            self._workspace.mkdir(parents=True, exist_ok=True)
+
+    # ── Path resolution ──────────────────────────────────────────
+
+    def _resolve(self, virtual_path: str) -> Path:
+        """Convert virtual path to real path, with security checks."""
+        vp = virtual_path.replace("\\", "/")
+
+        # Strip virtual prefix
+        if vp.startswith(_VIRTUAL_PREFIX + "/"):
+            vp = vp[len(_VIRTUAL_PREFIX) + 1:]
+        elif vp.startswith(_VIRTUAL_PREFIX):
+            vp = vp[len(_VIRTUAL_PREFIX):]
+        elif vp.startswith("/"):
+            raise PathDeniedError(f"Absolute paths outside /workspace are not allowed: {virtual_path}")
+
+        # Reject traversal
+        if ".." in Path(vp).parts:
+            raise PathDeniedError(f"Path traversal not allowed: {virtual_path}")
+
+        resolved = (self._workspace / vp).resolve()
+
+        # Containment check
+        try:
+            resolved.relative_to(self._workspace)
+        except ValueError:
+            raise PathDeniedError(f"Path escapes workspace: {virtual_path}")
+
+        return resolved
+
+    def _to_virtual(self, real_path: Path) -> str:
+        """Convert real path back to virtual path for output masking."""
+        try:
+            rel = real_path.resolve().relative_to(self._workspace)
+            return f"{_VIRTUAL_PREFIX}/{rel.as_posix()}"
+        except ValueError:
+            return str(real_path)
+
+    def _mask_output(self, text: str) -> str:
+        """Replace real workspace paths with virtual paths in output."""
+        ws_str = str(self._workspace)
+        # Handle both forward and back slashes
+        result = text.replace(ws_str, _VIRTUAL_PREFIX)
+        result = result.replace(ws_str.replace("\\", "/"), _VIRTUAL_PREFIX)
+        result = result.replace(ws_str.replace("/", "\\"), _VIRTUAL_PREFIX)
+        return result
+
+    # ── Command execution ────────────────────────────────────────
+
+    @staticmethod
+    def _system_encoding() -> str:
+        if sys.platform == "win32":
+            return locale.getpreferredencoding(False) or "utf-8"
+        return "utf-8"
+
+    def execute_command(self, command: str, workdir: str = "/workspace", timeout: int = 30) -> str:
+        cwd = self._resolve(workdir)
+        if not cwd.exists():
+            raise FileNotFoundError_(workdir)
+
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                cwd=str(cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+                encoding=self._system_encoding(),
+                errors="replace",
+            )
+
+            parts: list[str] = []
+            if result.returncode != 0:
+                parts.append(f"[exit {result.returncode}]")
+            if (result.stdout or "").strip():
+                parts.append(result.stdout)
+            if (result.stderr or "").strip():
+                parts.append(f"[stderr]\n{result.stderr}")
+
+            output = "\n".join(parts).strip() or "(no output)"
+
+            if len(output) > _MAX_OUTPUT:
+                output = output[:_MAX_OUTPUT] + f"\n... (truncated, {len(output)} total chars)"
+
+            return self._mask_output(output)
+
+        except subprocess.TimeoutExpired:
+            raise CommandError(f"Command timed out after {timeout}s")
+        except Exception as e:
+            raise CommandError(str(e))
+
+    # ── File operations ──────────────────────────────────────────
+
+    def read_file(self, path: str, start_line: int = 0, end_line: int = 0) -> str:
+        p = self._resolve(path)
+        if not p.exists():
+            raise FileNotFoundError_(path)
+        if not p.is_file():
+            raise ToolError(f"Not a file: {path}")
+
+        lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+        total = len(lines)
+
+        start = (start_line - 1) if start_line > 0 else 0
+        end = end_line if end_line > 0 else total
+        actual_end = min(end, start + _READ_MAX_LINES)
+        selected = lines[start:actual_end]
+        content = "".join(selected) or "(empty)"
+
+        if actual_end < end:
+            content += (
+                f"\n[truncated: showing lines {start + 1}-{actual_end} of {total}. "
+                f"Use start_line/end_line to read more.]"
+            )
+        return content
+
+    def write_file(self, path: str, content: str, append: bool = False) -> str:
+        p = self._resolve(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        mode = "a" if append else "w"
+        with open(p, mode, encoding="utf-8") as f:
+            f.write(content)
+        return f"Written {len(content)} chars to {self._to_virtual(p)}"
+
+    def str_replace(self, path: str, old_str: str, new_str: str, replace_all: bool = False) -> str:
+        p = self._resolve(path)
+        if not p.exists():
+            raise FileNotFoundError_(path)
+        if not p.is_file():
+            raise ToolError(f"Not a file: {path}")
+
+        content = p.read_text(encoding="utf-8")
+        count = content.count(old_str)
+        if count == 0:
+            raise ToolError(f"String not found in {path}")
+        if not replace_all and count > 1:
+            raise ToolError(f"String appears {count} times; pass replace_all=True or use a more specific string")
+
+        new_content = content.replace(old_str, new_str) if replace_all else content.replace(old_str, new_str, 1)
+        p.write_text(new_content, encoding="utf-8")
+        replaced = count if replace_all else 1
+        return f"Replaced {replaced} occurrence(s) in {self._to_virtual(p)}"
+
+    # ── Directory listing ────────────────────────────────────────
+
+    def list_dir(self, path: str, max_depth: int = 2) -> str:
+        p = self._resolve(path)
+        if not p.exists():
+            raise FileNotFoundError_(path)
+        if not p.is_dir():
+            raise ToolError(f"Not a directory: {path}")
+
+        result: list[str] = [self._to_virtual(p)]
+        self._walk(p, "", max_depth, 1, result)
+        return "\n".join(result)
+
+    def _walk(self, directory: Path, prefix: str, max_depth: int, depth: int, lines: list[str]) -> None:
+        try:
+            entries = sorted(directory.iterdir(), key=lambda e: (e.is_file(), e.name.lower()))
+        except PermissionError:
+            lines.append(f"{prefix}[permission denied]")
+            return
+
+        # Filter ignored
+        entries = [e for e in entries if e.name not in _IGNORED_NAMES]
+
+        for i, entry in enumerate(entries):
+            is_last = i == len(entries) - 1
+            connector = "└── " if is_last else "├── "
+            lines.append(f"{prefix}{connector}{entry.name}{'/' if entry.is_dir() else ''}")
+            if entry.is_dir() and depth < max_depth:
+                extension = "    " if is_last else "│   "
+                self._walk(entry, prefix + extension, max_depth, depth + 1, lines)
+
+    # ── Search operations ────────────────────────────────────────
+
+    def _is_skipped(self, p: Path) -> bool:
+        return bool(_IGNORED_NAMES.intersection(p.parts))
+
+    def _is_binary(self, p: Path) -> bool:
+        return p.suffix.lower() in _BINARY_EXTENSIONS
+
+    def glob_files(self, pattern: str, path: str = "/workspace") -> str:
+        root = self._resolve(path)
+        if not root.exists():
+            raise FileNotFoundError_(path)
+        if not root.is_dir():
+            raise ToolError(f"Not a directory: {path}")
+
+        matches = sorted(
+            (p for p in root.glob(pattern) if p.is_file() and not self._is_skipped(p)),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+
+        if not matches:
+            return f"No files matching '{pattern}' in {self._to_virtual(root)}"
+
+        total = len(matches)
+        truncated = matches[:_MAX_SEARCH_RESULTS]
+        lines = [self._to_virtual(p) for p in truncated]
+
+        if total > _MAX_SEARCH_RESULTS:
+            lines.append(f"\n[truncated: showing {_MAX_SEARCH_RESULTS} of {total} matches]")
+
+        return "\n".join(lines)
+
+    def grep_search(self, pattern: str, path: str = "/workspace", glob: str = "", context: int = 0) -> str:
+        try:
+            regex = re.compile(pattern)
+        except re.error as e:
+            raise ToolError(f"Invalid regex: {e}")
+
+        root = self._resolve(path)
+        if not root.exists():
+            raise FileNotFoundError_(path)
+
+        files: list[Path]
+        if root.is_file():
+            files = [root]
+        elif glob:
+            files = sorted(
+                p for p in root.rglob(glob)
+                if p.is_file() and not self._is_skipped(p) and not self._is_binary(p)
+            )
+        else:
+            files = sorted(
+                p for p in root.rglob("*")
+                if p.is_file() and not self._is_skipped(p) and not self._is_binary(p)
+            )
+
+        ctx = min(context, _MAX_CONTEXT_LINES)
+        results: list[str] = []
+        match_count = 0
+
+        for fp in files:
+            try:
+                file_lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception:
+                continue
+
+            vp = self._to_virtual(fp)
+            for i, line in enumerate(file_lines):
+                if not regex.search(line):
+                    continue
+
+                match_count += 1
+                if match_count > _MAX_SEARCH_RESULTS:
+                    results.append(f"\n[truncated: {_MAX_SEARCH_RESULTS} of {match_count}+ matches shown]")
+                    return "\n".join(results)
+
+                if ctx > 0:
+                    start = max(0, i - ctx)
+                    end = min(len(file_lines), i + ctx + 1)
+                    snippet = "\n".join(
+                        f"  {j + 1}{'>' if j == i else ':'} {file_lines[j]}"
+                        for j in range(start, end)
+                    )
+                    results.append(f"{vp}:\n{snippet}")
+                else:
+                    results.append(f"{vp}:{i + 1}: {line}")
+
+        if not results:
+            return f"No matches for '{pattern}'"
+
+        return "\n".join(results)

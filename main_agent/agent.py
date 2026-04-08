@@ -5,7 +5,7 @@ from pydantic_ai.settings import ModelSettings
 
 from backend.core.llm import LLMConfig, build_model
 from main_agent.config import Settings
-from main_agent.tools import TOOLS
+from main_agent.tools.tools import get_available_tools
 
 
 def _build_model_settings(llm: LLMConfig) -> ModelSettings:
@@ -21,7 +21,6 @@ def create_agent(settings: Settings) -> Agent[None, str]:
         model=model,
         instructions=settings.system_prompt,
         model_settings=_build_model_settings(settings.llm),
-        tools=TOOLS,
-        name="bob-harness",
-        defer_model_check=True,
+        tools=get_available_tools(),
+        name="bob-harness"
     )

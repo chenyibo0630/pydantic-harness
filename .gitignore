@@ -15,6 +15,9 @@ venv/
 .pytest_cache/
 .mypy_cache/
 
+# logs
+logs/
+
 # frontend
 node_modules/
 main_agent/.venv/

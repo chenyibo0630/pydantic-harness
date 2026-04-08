@@ -4,6 +4,7 @@ import styles from "./App.module.css";
 interface Message {
   role: "user" | "assistant";
   content: string;
+  toolCalls?: string[];
 }
 
 interface UsageInfo {
@@ -66,6 +67,7 @@ export function App() {
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let currentEvent = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -76,10 +78,17 @@ export function App() {
         buffer = lines.pop() || "";
 
         for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7).trim();
+            continue;
+          }
+
           if (line.startsWith("data: ")) {
             const data = JSON.parse(line.slice(6));
+            const event = currentEvent;
+            currentEvent = "";
 
-            if ("text" in data) {
+            if (event === "text_delta") {
               setMessages((prev) => {
                 const updated = [...prev];
                 const last = updated[updated.length - 1];
@@ -92,11 +101,24 @@ export function App() {
               scrollToBottom();
             }
 
-            if ("usage" in data) {
+            if (event === "tool_call") {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                updated[updated.length - 1] = {
+                  ...last,
+                  toolCalls: [...(last.toolCalls || []), data.tool_name],
+                };
+                return updated;
+              });
+              scrollToBottom();
+            }
+
+            if (event === "done" && data.usage) {
               setUsage(data.usage);
             }
 
-            if ("error" in data && "message" in data) {
+            if (event === "error") {
               setMessages((prev) => {
                 const updated = [...prev];
                 updated[updated.length - 1] = {
@@ -149,6 +171,13 @@ export function App() {
             className={`${styles.message} ${styles[msg.role]}`}
           >
             <span className={styles.role}>{msg.role}</span>
+            {msg.toolCalls && msg.toolCalls.length > 0 && (
+              <div className={styles.toolCalls}>
+                {msg.toolCalls.map((name, j) => (
+                  <span key={j} className={styles.toolBadge}>{name}</span>
+                ))}
+              </div>
+            )}
             <div className={styles.content}>{msg.content}</div>
           </div>
         ))}

@@ -14,6 +14,7 @@ _DEFAULT_STREAM_TIMEOUT = 120.0
 @router.post("/stream")
 async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     registry = request.app.state.agent_registry
+    memory = request.app.state.memory
     try:
         agent = registry.get(body.agent)
     except KeyError as exc:
@@ -34,6 +35,8 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         stream_agent_response(
             agent,
             body.message,
+            memory=memory,
+            conversation_id=body.conversation_id,
             timeout=timeout,
             disconnected=disconnected,
         ),

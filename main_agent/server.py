@@ -1,6 +1,7 @@
 """Main Agent server — run with: uv run server.py"""
 
 import logging
+import logging.handlers
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,10 +13,35 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.core.memory import InMemoryStore
+from backend.core.sandbox import init_sandbox
 from backend.gateway.routes import router
 from main_agent.agent import create_agent
 from main_agent.config import get_settings
-from main_agent.tools.file import set_write_roots
+
+_LOG_DIR = Path(__file__).parent / "logs"
+_LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
+
+
+def _setup_logging(level: str) -> None:
+    _LOG_DIR.mkdir(exist_ok=True)
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # console
+    console = logging.StreamHandler()
+    console.setFormatter(logging.Formatter(_LOG_FORMAT))
+    root.addHandler(console)
+
+    # file — 10 MB per file, keep 5 backups
+    file_handler = logging.handlers.RotatingFileHandler(
+        _LOG_DIR / "main_agent.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    root.addHandler(file_handler)
 
 
 class _SimpleRegistry:
@@ -37,11 +63,12 @@ class _SimpleRegistry:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    logging.basicConfig(level=settings.server.log_level)
+    _setup_logging(settings.server.log_level)
     if settings.agent.workspace:
-        set_write_roots([settings.agent.workspace])
+        init_sandbox(settings.agent.workspace)
     agent = create_agent(settings)
     app.state.agent_registry = _SimpleRegistry(agent)
+    app.state.memory = InMemoryStore()
     app.state.stream_timeout = settings.server.stream_timeout
     yield
 

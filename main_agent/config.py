@@ -5,6 +5,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from backend.core.llm import LLMConfig
+from backend.core.prompt import load_prompts
 
 
 _CONFIG_PATH = Path(__file__).parent / "config.yaml"
@@ -30,8 +31,9 @@ class Settings(BaseModel):
 
     @property
     def system_prompt(self) -> str:
-        path = Path(__file__).parent / self.agent.system_prompt_file
-        return path.read_text(encoding="utf-8").strip()
+        prompts_dir = Path(__file__).parent / "prompts"
+        main_file = Path(self.agent.system_prompt_file).name
+        return load_prompts(prompts_dir, main_file=main_file)
 
 
 @lru_cache
