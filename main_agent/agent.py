@@ -22,5 +22,5 @@ def create_agent(settings: Settings) -> Agent[None, str]:
         instructions=settings.system_prompt,
         model_settings=_build_model_settings(settings.llm),
         tools=get_available_tools(),
-        name="bob-harness"
+        name="bob-harness",
     )

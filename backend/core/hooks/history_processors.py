@@ -6,6 +6,9 @@ Usage in agent.py:
     Agent(
         history_processors=[trim_history(max_messages=20)],
     )
+
+Note: summarization is handled by SummarizingMemory (backend.core.memory.summarizing),
+not by history_processors, to avoid blocking the user-facing response.
 """
 
 from collections.abc import Callable

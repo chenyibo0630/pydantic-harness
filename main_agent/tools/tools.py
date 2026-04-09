@@ -19,6 +19,7 @@ from backend.core.sandbox import (
     glob_files,
     grep_search,
 )
+from backend.core.tools import ask_user
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ DEFAULT_TOOLS: list[Callable[..., Any]] = [
     write_file,
     glob_files,
     grep_search,
+    ask_user,
 ]
 
 

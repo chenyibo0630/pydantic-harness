@@ -38,7 +38,7 @@ async def stream_agent_response(
     conv_id = conversation_id or uuid.uuid4().hex
     history: list[ModelMessage] = await memory.get(conv_id) or []
 
-    yield format_sse("conversation", {"conversation_id": conv_id})
+    yield format_sse("message_start", {"conversation_id": conv_id})
 
     try:
         async with asyncio.timeout(timeout):
@@ -96,7 +96,7 @@ async def stream_agent_response(
                 await memory.set(conv_id, result_event.result.all_messages())
                 usage = result_event.result.usage()
                 yield format_sse(
-                    "done",
+                    "message_end",
                     {
                         "conversation_id": conv_id,
                         "usage": {

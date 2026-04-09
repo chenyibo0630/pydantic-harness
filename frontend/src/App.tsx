@@ -114,7 +114,7 @@ export function App() {
               scrollToBottom();
             }
 
-            if (event === "done" && data.usage) {
+            if (event === "message_end" && data.usage) {
               setUsage(data.usage);
             }
 

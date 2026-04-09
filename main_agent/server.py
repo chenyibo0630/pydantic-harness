@@ -13,7 +13,8 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.core.memory import InMemoryStore
+from backend.core.llm import build_model
+from backend.core.memory import InMemoryStore, SummarizingMemory
 from backend.core.sandbox import init_sandbox
 from backend.gateway.routes import router
 from main_agent.agent import create_agent
@@ -68,7 +69,8 @@ async def lifespan(app: FastAPI):
         init_sandbox(settings.agent.workspace)
     agent = create_agent(settings)
     app.state.agent_registry = _SimpleRegistry(agent)
-    app.state.memory = InMemoryStore()
+    model = build_model(settings.llm)
+    app.state.memory = SummarizingMemory(InMemoryStore(), model=model)
     app.state.stream_timeout = settings.server.stream_timeout
     yield
 

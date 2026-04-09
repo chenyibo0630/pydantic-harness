@@ -106,11 +106,11 @@ cd frontend && npm run dev
 ### SSE 事件格式
 | 事件 | 数据 | 时机 |
 |------|------|------|
-| `conversation` | `{conversation_id}` | 连接建立 |
+| `message_start` | `{conversation_id}` | 响应开始 |
 | `text_delta` | `{text}` | 每个 LLM token |
 | `tool_call` | `{tool_name, tool_call_id}` | LLM 决定调用工具 |
 | `tool_result` | `{tool_name, tool_call_id, content}` | 工具执行完毕 |
-| `done` | `{conversation_id, usage: {input_tokens, output_tokens, total_tokens}}` | 流结束 |
+| `message_end` | `{conversation_id, usage: {input_tokens, output_tokens, total_tokens}}` | 响应结束 |
 | `error` | `{error, message}` | 异常 |
 
 ### 新增 Agent 步骤
