@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.core.llm import build_model
 from backend.core.memory import InMemoryStore, SummarizingMemory
 from backend.core.sandbox import init_sandbox
+from backend.core.skills import load_skills, init_skill_tool
 from backend.gateway.routes import router
 from main_agent.agent import create_agent
 from main_agent.config import get_settings
@@ -65,9 +66,13 @@ class _SimpleRegistry:
 async def lifespan(app: FastAPI):
     settings = get_settings()
     _setup_logging(settings.server.log_level)
+    # skills/ is always at project root (parent of main_agent/)
+    skills_dir = Path(__file__).resolve().parent.parent / "skills"
+    skills = load_skills(skills_dir, enabled=settings.agent.skills or None)
+    init_skill_tool(skills)
     if settings.agent.workspace:
-        init_sandbox(settings.agent.workspace)
-    agent = create_agent(settings)
+        init_sandbox(settings.agent.workspace, skills_dir=str(skills_dir), skills=skills)
+    agent = create_agent(settings, skills=skills)
     app.state.agent_registry = _SimpleRegistry(agent)
     model = build_model(settings.llm)
     app.state.memory = SummarizingMemory(InMemoryStore(), model=model)

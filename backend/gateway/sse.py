@@ -11,6 +11,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     PartDeltaEvent,
     PartStartEvent,
+    TextPart,
     TextPartDelta,
     ToolCallPart,
     ToolReturnPart,
@@ -51,8 +52,17 @@ async def stream_agent_response(
                     logger.info("Client disconnected, aborting stream")
                     return
 
+                # Text part start (may contain first character)
+                if isinstance(event, PartStartEvent) and isinstance(
+                    event.part, TextPart
+                ):
+                    if event.part.content:
+                        yield format_sse(
+                            "text_delta", {"text": event.part.content}
+                        )
+
                 # Text delta
-                if isinstance(event, PartDeltaEvent) and isinstance(
+                elif isinstance(event, PartDeltaEvent) and isinstance(
                     event.delta, TextPartDelta
                 ):
                     yield format_sse(

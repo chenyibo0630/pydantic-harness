@@ -18,6 +18,7 @@ export function App() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [usage, setUsage] = useState<UsageInfo | null>(null);
+  const [conversationId, setConversationId] = useState(() => crypto.randomUUID());
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -46,7 +47,7 @@ export function App() {
       const resp = await fetch("/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, conversation_id: conversationId }),
         signal: controller.signal,
       });
 
@@ -78,15 +79,19 @@ export function App() {
         buffer = lines.pop() || "";
 
         for (const line of lines) {
+          if (!line.trim()) continue;
+
           if (line.startsWith("event: ")) {
             currentEvent = line.slice(7).trim();
             continue;
           }
 
-          if (line.startsWith("data: ")) {
+          if (line.startsWith("data: ") && currentEvent) {
             const data = JSON.parse(line.slice(6));
             const event = currentEvent;
             currentEvent = "";
+
+            console.debug(`[SSE] ${event}`, data);
 
             if (event === "text_delta") {
               setMessages((prev) => {

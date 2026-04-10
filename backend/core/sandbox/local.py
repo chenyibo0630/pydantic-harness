@@ -5,6 +5,7 @@ All tool operations are confined within the workspace boundary.
 """
 
 import locale
+import os
 import re
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from backend.core.sandbox.exceptions import (
 )
 
 _VIRTUAL_PREFIX = "/workspace"
+_SKILLS_PREFIX = "/skills"
 _READ_MAX_LINES = 200
 _MAX_OUTPUT = 8000
 _MAX_SEARCH_RESULTS = 200
@@ -52,32 +54,58 @@ _BINARY_EXTENSIONS: set[str] = {
 class LocalSandbox(Sandbox):
     """Local filesystem sandbox confined to a workspace directory."""
 
-    def __init__(self, workspace: str) -> None:
+    def __init__(
+        self,
+        workspace: str,
+        skills_dir: str | None = None,
+        skills: list | None = None,
+        python_path: str | None = None,
+    ) -> None:
         self._workspace = Path(workspace).resolve()
         if not self._workspace.exists():
             self._workspace.mkdir(parents=True, exist_ok=True)
+        self._skills_dir = Path(skills_dir).resolve() if skills_dir else None
+        self._skills = skills or []
+        self._python_path = python_path or sys.executable
 
     # ── Path resolution ──────────────────────────────────────────
 
     def _resolve(self, virtual_path: str) -> Path:
-        """Convert virtual path to real path, with security checks."""
+        """Convert virtual path to real path, with security checks.
+
+        Supported virtual prefixes:
+          /workspace/...  → maps to workspace directory (read/write)
+          /skills/...     → maps to skills directory (read-only)
+        """
         vp = virtual_path.replace("\\", "/")
 
-        # Strip virtual prefix
+        # /skills/ prefix → read-only skills directory
+        if vp.startswith(_SKILLS_PREFIX + "/") or vp == _SKILLS_PREFIX:
+            if self._skills_dir is None:
+                raise PathDeniedError("Skills directory not configured")
+            rel = vp[len(_SKILLS_PREFIX):].lstrip("/")
+            if ".." in Path(rel).parts:
+                raise PathDeniedError(f"Path traversal not allowed: {virtual_path}")
+            resolved = (self._skills_dir / rel).resolve()
+            try:
+                resolved.relative_to(self._skills_dir)
+            except ValueError:
+                raise PathDeniedError(f"Path escapes skills directory: {virtual_path}")
+            return resolved
+
+        # /workspace/ prefix → workspace directory
         if vp.startswith(_VIRTUAL_PREFIX + "/"):
             vp = vp[len(_VIRTUAL_PREFIX) + 1:]
         elif vp.startswith(_VIRTUAL_PREFIX):
             vp = vp[len(_VIRTUAL_PREFIX):]
         elif vp.startswith("/"):
-            raise PathDeniedError(f"Absolute paths outside /workspace are not allowed: {virtual_path}")
+            raise PathDeniedError(f"Absolute paths outside /workspace and /skills are not allowed: {virtual_path}")
 
-        # Reject traversal
         if ".." in Path(vp).parts:
             raise PathDeniedError(f"Path traversal not allowed: {virtual_path}")
 
         resolved = (self._workspace / vp).resolve()
 
-        # Containment check
         try:
             resolved.relative_to(self._workspace)
         except ValueError:
@@ -87,19 +115,33 @@ class LocalSandbox(Sandbox):
 
     def _to_virtual(self, real_path: Path) -> str:
         """Convert real path back to virtual path for output masking."""
+        resolved = real_path.resolve()
+        if self._skills_dir:
+            try:
+                rel = resolved.relative_to(self._skills_dir)
+                return f"{_SKILLS_PREFIX}/{rel.as_posix()}"
+            except ValueError:
+                pass
         try:
-            rel = real_path.resolve().relative_to(self._workspace)
+            rel = resolved.relative_to(self._workspace)
             return f"{_VIRTUAL_PREFIX}/{rel.as_posix()}"
         except ValueError:
             return str(real_path)
 
     def _mask_output(self, text: str) -> str:
-        """Replace real workspace paths with virtual paths in output."""
-        ws_str = str(self._workspace)
-        # Handle both forward and back slashes
-        result = text.replace(ws_str, _VIRTUAL_PREFIX)
-        result = result.replace(ws_str.replace("\\", "/"), _VIRTUAL_PREFIX)
-        result = result.replace(ws_str.replace("/", "\\"), _VIRTUAL_PREFIX)
+        """Replace real paths with virtual paths in output."""
+        result = text
+        # Mask skills dir first (longer path takes precedence)
+        if self._skills_dir:
+            sd = str(self._skills_dir)
+            result = result.replace(sd, _SKILLS_PREFIX)
+            result = result.replace(sd.replace("\\", "/"), _SKILLS_PREFIX)
+            result = result.replace(sd.replace("/", "\\"), _SKILLS_PREFIX)
+        # Mask workspace
+        ws = str(self._workspace)
+        result = result.replace(ws, _VIRTUAL_PREFIX)
+        result = result.replace(ws.replace("\\", "/"), _VIRTUAL_PREFIX)
+        result = result.replace(ws.replace("/", "\\"), _VIRTUAL_PREFIX)
         return result
 
     # ── Command execution ────────────────────────────────────────
@@ -110,16 +152,43 @@ class LocalSandbox(Sandbox):
             return locale.getpreferredencoding(False) or "utf-8"
         return "utf-8"
 
+    def _resolve_skill_env(self, command: str) -> dict[str, str]:
+        """Extract env vars from matched skill's config for subprocess injection."""
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        cmd_normalized = command.replace("\\", "/")
+        for skill in self._skills:
+            if f"skills/{skill.name}/" in cmd_normalized:
+                for k, v in skill.config.items():
+                    if isinstance(v, str):
+                        env[k.upper()] = v
+                break
+        return env
+
+    def _resolve_python(self, command: str) -> str:
+        """Replace bare 'python ' with the venv Python path."""
+        if command.startswith("python ") or command.startswith("python3 "):
+            prefix = "python3 " if command.startswith("python3 ") else "python "
+            return f'"{self._python_path}" {command[len(prefix):]}'
+        return command
+
     def execute_command(self, command: str, workdir: str = "/workspace", timeout: int = 30) -> str:
-        cwd = self._resolve(workdir)
+        try:
+            cwd = self._resolve(workdir)
+        except PathDeniedError:
+            cwd = self._workspace  # fallback to workspace root
         if not cwd.exists():
-            raise FileNotFoundError_(workdir)
+            cwd = self._workspace
+
+        command = self._resolve_python(command)
+        env = self._resolve_skill_env(command)
 
         try:
             result = subprocess.run(
                 command,
                 shell=True,
                 cwd=str(cwd),
+                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=timeout,

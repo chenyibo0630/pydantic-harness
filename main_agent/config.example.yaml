@@ -22,3 +22,9 @@ server:
 agent:
   system_prompt_file: prompts/SYSTEM.md
   workspace: /path/to/your/workspace
+  skills:
+    - tavily
+
+# Skill API keys are provided via environment variables (not in this file).
+# Each skill's SKILL.md declares required_env in frontmatter.
+# Example: set TAVILY_API_KEY in .env or system environment to enable the tavily skill.

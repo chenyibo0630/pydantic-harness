@@ -22,13 +22,13 @@ class ServerConfig(BaseModel):
 class AgentConfig(BaseModel):
     system_prompt_file: str = "prompts/SYSTEM.md"
     workspace: str = ""
+    skills: list[str] = Field(default_factory=list)
 
 
 class Settings(BaseModel):
     llm: LLMConfig = LLMConfig()
     server: ServerConfig = ServerConfig()
     agent: AgentConfig = AgentConfig()
-
     @property
     def system_prompt(self) -> str:
         prompts_dir = Path(__file__).parent / "prompts"

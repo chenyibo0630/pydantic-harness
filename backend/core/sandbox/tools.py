@@ -10,10 +10,15 @@ from backend.core.sandbox.local import LocalSandbox
 _sandbox: Sandbox | None = None
 
 
-def init_sandbox(workspace: str) -> None:
+def init_sandbox(
+    workspace: str,
+    skills_dir: str | None = None,
+    skills: list | None = None,
+    python_path: str | None = None,
+) -> None:
     """Initialize the global sandbox. Called at agent startup."""
     global _sandbox
-    _sandbox = LocalSandbox(workspace)
+    _sandbox = LocalSandbox(workspace, skills_dir=skills_dir, skills=skills, python_path=python_path)
 
 
 def get_sandbox() -> Sandbox:
