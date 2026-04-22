@@ -1,5 +1,7 @@
+import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -19,6 +21,13 @@ class ServerConfig(BaseModel):
     log_level: str = "INFO"
 
 
+class SandboxConfig(BaseModel):
+    type: Literal["local", "remote"] = "local"
+    remote_url: str = "http://sandbox:8100"
+    token: str = ""
+    timeout: int = 60
+
+
 class AgentConfig(BaseModel):
     system_prompt_file: str = "prompts/SYSTEM.md"
     workspace: str = ""
@@ -29,6 +38,7 @@ class Settings(BaseModel):
     llm: LLMConfig = LLMConfig()
     server: ServerConfig = ServerConfig()
     agent: AgentConfig = AgentConfig()
+    sandbox: SandboxConfig = SandboxConfig()
     @property
     def system_prompt(self) -> str:
         prompts_dir = Path(__file__).parent / "prompts"
@@ -40,5 +50,17 @@ class Settings(BaseModel):
 def get_settings() -> Settings:
     if _CONFIG_PATH.exists():
         raw = yaml.safe_load(_CONFIG_PATH.read_text(encoding="utf-8")) or {}
-        return Settings(**raw)
-    return Settings()
+    else:
+        raw = {}
+
+    settings = Settings(**raw)
+
+    # Allow env vars to override sandbox config (for Docker)
+    if env_type := os.environ.get("SANDBOX_TYPE"):
+        settings.sandbox.type = env_type  # type: ignore[assignment]
+    if env_url := os.environ.get("SANDBOX_REMOTE_URL"):
+        settings.sandbox.remote_url = env_url
+    if env_token := os.environ.get("SANDBOX_TOKEN"):
+        settings.sandbox.token = env_token
+
+    return settings

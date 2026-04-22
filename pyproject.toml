@@ -4,10 +4,11 @@ version = "0.1.0"
 description = "Pydantic AI agent harness — shared modules and dev tools"
 requires-python = ">=3.12"
 dependencies = [
-    "pydantic-ai[openai]",
+    "pydantic-ai-slim[openai]",
     "fastapi",
     "uvicorn[standard]",
     "pyyaml",
+    "httpx",
 ]
 
 [project.optional-dependencies]

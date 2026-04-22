@@ -6,19 +6,45 @@ LLM sees their docstrings; execution goes through Sandbox.
 
 from backend.core.sandbox.base import Sandbox
 from backend.core.sandbox.local import LocalSandbox
+from backend.core.sandbox.remote import RemoteSandbox
 
 _sandbox: Sandbox | None = None
 
 
 def init_sandbox(
     workspace: str,
+    *,
     skills_dir: str | None = None,
     skills: list | None = None,
     python_path: str | None = None,
+    sandbox_type: str = "local",
+    remote_url: str = "",
+    remote_token: str = "",
+    remote_timeout: int = 60,
 ) -> None:
-    """Initialize the global sandbox. Called at agent startup."""
+    """Initialize the global sandbox. Called at agent startup.
+
+    Args:
+        workspace: Workspace directory path (used by local sandbox).
+        sandbox_type: "local" or "remote".
+        remote_url: Sandbox service URL (when sandbox_type is "remote").
+        remote_token: Bearer token for sandbox service auth.
+        remote_timeout: HTTP timeout in seconds for remote calls.
+    """
     global _sandbox
-    _sandbox = LocalSandbox(workspace, skills_dir=skills_dir, skills=skills, python_path=python_path)
+    if sandbox_type == "remote":
+        _sandbox = RemoteSandbox(
+            base_url=remote_url,
+            token=remote_token,
+            timeout=remote_timeout,
+        )
+    else:
+        _sandbox = LocalSandbox(
+            workspace,
+            skills_dir=skills_dir,
+            skills=skills,
+            python_path=python_path,
+        )
 
 
 def get_sandbox() -> Sandbox:

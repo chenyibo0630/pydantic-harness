@@ -70,8 +70,16 @@ async def lifespan(app: FastAPI):
     skills_dir = Path(__file__).resolve().parent.parent / "skills"
     skills = load_skills(skills_dir, enabled=settings.agent.skills or None)
     init_skill_tool(skills)
-    if settings.agent.workspace:
-        init_sandbox(settings.agent.workspace, skills_dir=str(skills_dir), skills=skills)
+    if settings.agent.workspace or settings.sandbox.type == "remote":
+        init_sandbox(
+            settings.agent.workspace,
+            skills_dir=str(skills_dir),
+            skills=skills,
+            sandbox_type=settings.sandbox.type,
+            remote_url=settings.sandbox.remote_url,
+            remote_token=settings.sandbox.token,
+            remote_timeout=settings.sandbox.timeout,
+        )
     agent = create_agent(settings, skills=skills)
     app.state.agent_registry = _SimpleRegistry(agent)
     model = build_model(settings.llm)

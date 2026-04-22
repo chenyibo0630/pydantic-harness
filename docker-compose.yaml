@@ -1,0 +1,52 @@
+services:
+  sandbox:
+    build:
+      context: .
+      dockerfile: sandbox_service/Dockerfile
+    ports:
+      - "8100:8100"
+    volumes:
+      - workspace:/app/workspace
+      - ./skills:/app/skills:ro
+    environment:
+      - PYTHONPATH=/app
+      - SANDBOX_WORKSPACE=/app/workspace
+      - SANDBOX_SKILLS_DIR=/app/skills
+      - SANDBOX_TOKEN=${SANDBOX_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: main_agent/Dockerfile
+    ports:
+      - "2648:2648"
+    volumes:
+      - ./main_agent/config.yaml:/app/main_agent/config.yaml:ro
+    environment:
+      - PYTHONPATH=/app
+      - SANDBOX_TYPE=remote
+      - SANDBOX_REMOTE_URL=http://sandbox:8100
+      - SANDBOX_TOKEN=${SANDBOX_TOKEN:-}
+    depends_on:
+      sandbox:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: frontend/
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  workspace:
