@@ -13,8 +13,12 @@ COPY backend/core/__init__.py backend/core/__init__.py
 COPY backend/__init__.py backend/__init__.py
 COPY sandbox_service/ sandbox_service/
 
-# Skills are mounted as volume at runtime
-RUN mkdir -p /app/skills /app/workspace
+# Create non-root user and prep writable dirs before USER switch
+RUN useradd -m -u 1000 -s /bin/bash sandboxuser \
+    && mkdir -p /app/skills /app/workspace \
+    && chown -R sandboxuser:sandboxuser /app
+
+USER sandboxuser
 
 ENV PYTHONPATH=/app
 EXPOSE 8100

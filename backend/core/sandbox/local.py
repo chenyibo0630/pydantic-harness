@@ -70,6 +70,23 @@ class LocalSandbox(Sandbox):
 
     # ── Path resolution ──────────────────────────────────────────
 
+    def _reject_symlink_in_path(self, raw: Path, root: Path, virtual_path: str) -> None:
+        """Reject if any segment of raw (up to but excluding root) is a symlink.
+
+        Checked on the unresolved path — .resolve() would otherwise mask the
+        symlink. Prevents both out-of-workspace escape and intra-workspace
+        information leaks via symlinks.
+        """
+        try:
+            rel = raw.relative_to(root)
+        except ValueError:
+            return  # not under root; other checks will reject
+        current = root
+        for part in rel.parts:
+            current = current / part
+            if current.is_symlink():
+                raise PathDeniedError(f"Symlinks are not allowed: {virtual_path}")
+
     def _resolve(self, virtual_path: str) -> Path:
         """Convert virtual path to real path, with security checks.
 
@@ -86,7 +103,9 @@ class LocalSandbox(Sandbox):
             rel = vp[len(_SKILLS_PREFIX):].lstrip("/")
             if ".." in Path(rel).parts:
                 raise PathDeniedError(f"Path traversal not allowed: {virtual_path}")
-            resolved = (self._skills_dir / rel).resolve()
+            raw = self._skills_dir / rel
+            self._reject_symlink_in_path(raw, self._skills_dir, virtual_path)
+            resolved = raw.resolve()
             try:
                 resolved.relative_to(self._skills_dir)
             except ValueError:
@@ -104,7 +123,9 @@ class LocalSandbox(Sandbox):
         if ".." in Path(vp).parts:
             raise PathDeniedError(f"Path traversal not allowed: {virtual_path}")
 
-        resolved = (self._workspace / vp).resolve()
+        raw = self._workspace / vp
+        self._reject_symlink_in_path(raw, self._workspace, virtual_path)
+        resolved = raw.resolve()
 
         try:
             resolved.relative_to(self._workspace)
@@ -307,6 +328,28 @@ class LocalSandbox(Sandbox):
     def _is_binary(self, p: Path) -> bool:
         return p.suffix.lower() in _BINARY_EXTENSIONS
 
+    def _has_symlink_ancestor(self, p: Path, root: Path) -> bool:
+        """True if any directory between root (exclusive) and p (inclusive) is a symlink."""
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            return False
+        current = root
+        for part in rel.parts[:-1]:
+            current = current / part
+            if current.is_symlink():
+                return True
+        return False
+
+    def _safe_file_filter(self, p: Path, root: Path) -> bool:
+        """Common filter: regular file, not symlink, not in ignored dirs, no symlink ancestor."""
+        return (
+            p.is_file()
+            and not p.is_symlink()
+            and not self._is_skipped(p)
+            and not self._has_symlink_ancestor(p, root)
+        )
+
     def glob_files(self, pattern: str, path: str = "/workspace") -> str:
         root = self._resolve(path)
         if not root.exists():
@@ -315,7 +358,7 @@ class LocalSandbox(Sandbox):
             raise ToolError(f"Not a directory: {path}")
 
         matches = sorted(
-            (p for p in root.glob(pattern) if p.is_file() and not self._is_skipped(p)),
+            (p for p in root.glob(pattern) if self._safe_file_filter(p, root)),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
@@ -345,15 +388,11 @@ class LocalSandbox(Sandbox):
         files: list[Path]
         if root.is_file():
             files = [root]
-        elif glob:
-            files = sorted(
-                p for p in root.rglob(glob)
-                if p.is_file() and not self._is_skipped(p) and not self._is_binary(p)
-            )
         else:
+            pattern_glob = glob or "*"
             files = sorted(
-                p for p in root.rglob("*")
-                if p.is_file() and not self._is_skipped(p) and not self._is_binary(p)
+                p for p in root.rglob(pattern_glob)
+                if self._safe_file_filter(p, root) and not self._is_binary(p)
             )
 
         ctx = min(context, _MAX_CONTEXT_LINES)

@@ -47,6 +47,19 @@ def _verify_token(request: Request) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    token = os.environ.get("SANDBOX_TOKEN", "")
+    allow_no_auth = os.environ.get("SANDBOX_ALLOW_NO_AUTH", "").lower() == "true"
+    if not token and not allow_no_auth:
+        raise RuntimeError(
+            "SANDBOX_TOKEN not set. Refusing to start an unauthenticated sandbox. "
+            "For local dev, set SANDBOX_ALLOW_NO_AUTH=true explicitly."
+        )
+    if not token and allow_no_auth:
+        logger.warning(
+            "Sandbox running WITHOUT authentication (SANDBOX_ALLOW_NO_AUTH=true). "
+            "Do not use in production."
+        )
+
     workspace = os.environ.get("SANDBOX_WORKSPACE", "/app/workspace")
     skills_dir = os.environ.get("SANDBOX_SKILLS_DIR", "/app/skills")
     skills = load_skills(skills_dir)
