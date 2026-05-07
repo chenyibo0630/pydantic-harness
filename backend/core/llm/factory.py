@@ -1,15 +1,15 @@
 """LLM model factory — maps LLMConfig to pydantic-ai Model instances."""
 
 from pydantic_ai.models import Model
+from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.alibaba import AlibabaProvider
+from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.azure import AzureProvider
 from pydantic_ai.providers.deepseek import DeepSeekProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from backend.core.llm.config import LLMConfig
-
-# Qwen uses AlibabaProvider
-from pydantic_ai.providers.alibaba import AlibabaProvider
 
 
 def build_model(config: LLMConfig) -> Model:
@@ -41,3 +41,13 @@ def build_model(config: LLMConfig) -> Model:
                 kwargs["base_url"] = config.base_url
             provider = AlibabaProvider(**kwargs)
             return OpenAIChatModel(config.model, provider=provider)
+
+        case "anthropic":
+            # Native Anthropic API — uses AnthropicModel, not OpenAIChatModel.
+            kwargs: dict = {}
+            if config.api_key:
+                kwargs["api_key"] = config.api_key
+            if config.base_url:
+                kwargs["base_url"] = config.base_url
+            provider = AnthropicProvider(**kwargs)
+            return AnthropicModel(config.model, provider=provider)
