@@ -1,0 +1,67 @@
+services:
+  sandbox:
+    build:
+      context: .
+      dockerfile: sandbox_service/Dockerfile
+    # 8100 not exposed to host; backend reaches via docker network "sandbox:8100"
+    expose:
+      - "8100"
+    volumes:
+      - D:/develop/learning/harness-workspace:/app/workspace
+      - ./skills:/app/skills:ro
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - PYTHONPATH=/app
+      - SANDBOX_WORKSPACE=/app/workspace
+      - SANDBOX_SKILLS_DIR=/app/skills
+      - SANDBOX_TOKEN=${SANDBOX_TOKEN:-}
+      - SANDBOX_ALLOW_NO_AUTH=${SANDBOX_ALLOW_NO_AUTH:-}
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 200
+    cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: main_agent/Dockerfile
+    ports:
+      - "2648:2648"
+    volumes:
+      - ./main_agent/config.yaml:/app/main_agent/config.yaml:ro
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - PYTHONPATH=/app
+      - SANDBOX_TYPE=remote
+      - SANDBOX_REMOTE_URL=http://sandbox:8100
+      - SANDBOX_TOKEN=${SANDBOX_TOKEN:-}
+    depends_on:
+      sandbox:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: frontend/
+    ports:
+      - "3000:80"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    depends_on:
+      - backend
+    restart: unless-stopped
+

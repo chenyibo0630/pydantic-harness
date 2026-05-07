@@ -1,5 +1,5 @@
 llm:
-  # type: openai | azure | deepseek | qwen
+  # type: openai | azure | deepseek | qwen | anthropic
   type: azure
   model: gpt-5-chat
   api_key: your-api-key-here
@@ -11,12 +11,20 @@ llm:
   max_tokens: 4096
   # thinking: high  # enable reasoning (high/medium/low/minimal)
 
+# ── Anthropic (Claude) example ─────────────────────────────────
+# llm:
+#   type: anthropic
+#   model: claude-sonnet-4-6        # or claude-opus-4-7 / claude-haiku-4-5-20251001
+#   api_key: sk-ant-...
+#   temperature: 0
+#   max_tokens: 4096
+
 server:
   host: 0.0.0.0
   port: 8000
   cors_origins:
     - "*"
-  stream_timeout: 120.0
+  stream_timeout: 60.0  # idle timeout: max seconds between SSE events (not total stream time)
   log_level: INFO
 
 agent:

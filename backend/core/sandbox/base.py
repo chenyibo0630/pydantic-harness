@@ -8,15 +8,19 @@ class Sandbox(ABC):
 
     All file, command, and search operations go through this interface.
     Implementations handle path resolution, security, and execution.
+
+    Path convention: paths are relative to the workspace root. Use
+    "." for the workspace root itself, "foo.txt" for a file in the root,
+    "subdir/bar.txt" for nested files. Skill scripts use "/skills/<name>/...".
     """
 
     @abstractmethod
-    def execute_command(self, command: str, workdir: str = "/workspace", timeout: int = 30) -> str:
+    def execute_command(self, command: str, workdir: str = ".", timeout: int = 120) -> str:
         """Execute a shell command.
 
         Args:
             command: The shell command to execute.
-            workdir: Working directory (virtual path). Default /workspace.
+            workdir: Working directory (relative to workspace). Default ".".
             timeout: Timeout in seconds.
 
         Returns:
@@ -28,7 +32,7 @@ class Sandbox(ABC):
         """Read a file's contents.
 
         Args:
-            path: Virtual file path.
+            path: File path (relative to workspace).
             start_line: First line (1-based). 0 = start of file.
             end_line: Last line (1-based inclusive). 0 = end of file.
 
@@ -41,7 +45,7 @@ class Sandbox(ABC):
         """Write content to a file.
 
         Args:
-            path: Virtual file path.
+            path: File path (relative to workspace).
             content: Text content to write.
             append: If True, append instead of overwriting.
 
@@ -54,7 +58,7 @@ class Sandbox(ABC):
         """Replace a string in a file in-place.
 
         Args:
-            path: Virtual file path.
+            path: File path (relative to workspace).
             old_str: The exact string to replace.
             new_str: The replacement string.
             replace_all: If True, replace all occurrences.
@@ -68,7 +72,7 @@ class Sandbox(ABC):
         """List directory contents in tree format.
 
         Args:
-            path: Virtual directory path.
+            path: Directory path (relative to workspace).
             max_depth: Maximum depth to traverse.
 
         Returns:
@@ -76,24 +80,24 @@ class Sandbox(ABC):
         """
 
     @abstractmethod
-    def glob_files(self, pattern: str, path: str = "/workspace") -> str:
+    def glob_files(self, pattern: str, path: str = ".") -> str:
         """Find files matching a glob pattern.
 
         Args:
             pattern: Glob pattern (e.g. "**/*.py").
-            path: Virtual directory to search in.
+            path: Directory to search in (relative to workspace). Default ".".
 
         Returns:
             Matched file paths, one per line.
         """
 
     @abstractmethod
-    def grep_search(self, pattern: str, path: str = "/workspace", glob: str = "", context: int = 0) -> str:
+    def grep_search(self, pattern: str, path: str = ".", glob: str = "", context: int = 0) -> str:
         """Search file contents using a regex pattern.
 
         Args:
             pattern: Regular expression pattern.
-            path: Virtual file or directory to search in.
+            path: File or directory to search in (relative to workspace).
             glob: Optional glob to filter files (e.g. "*.py").
             context: Number of context lines around each match.
 

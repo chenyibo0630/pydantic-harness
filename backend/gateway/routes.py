@@ -8,7 +8,7 @@ from backend.gateway.sse import stream_agent_response
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
-_DEFAULT_STREAM_TIMEOUT = 120.0
+_DEFAULT_STREAM_TIMEOUT = 60.0  # idle timeout — max gap between SSE events
 
 
 @router.post("/stream")

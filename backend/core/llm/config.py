@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-LLMType = Literal["openai", "azure", "deepseek", "qwen"]
+LLMType = Literal["openai", "azure", "deepseek", "qwen", "anthropic"]
 ThinkingLevel = Literal["minimal", "low", "medium", "high", "xhigh"]
 
 

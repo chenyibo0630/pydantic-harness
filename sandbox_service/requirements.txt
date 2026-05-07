@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pydantic
+pyyaml
+tavily-python
+requests
+# pdf skill
+pymupdf
+pymupdf4llm
+markdown
