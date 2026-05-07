@@ -1,0 +1,29 @@
+# gitleaks config — extends the default ruleset with project-specific allowlist.
+# Docs: https://github.com/gitleaks/gitleaks#configuration
+#
+# We only ALLOW known placeholder strings and example fixtures here.
+# Real secrets are blocked by the bundled ~150 rules and must never be added.
+
+[extend]
+# Pull in the bundled default ruleset (don't replace it, just augment).
+useDefault = true
+
+[allowlist]
+description = "Project placeholders + examples that look like secrets but are not"
+
+regexes = [
+  # Our explicit placeholder values
+  '''your-api-key-here''',
+  '''sk-ant-REPLACE-ME''',
+  '''sk-ant-\.\.\.''',
+  # Generic ellipsis-style "fill in your key" patterns in docs
+  '''sk-[a-zA-Z0-9_-]*\.\.\.''',
+]
+
+paths = [
+  # Examples / templates by definition contain placeholder credentials
+  '''main_agent/config\.example\.yaml''',
+  # Docs may reference auth flows with example values
+  '''README\.md''',
+  '''CLAUDE\.md''',
+]
