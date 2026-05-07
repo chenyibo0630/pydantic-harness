@@ -22,6 +22,8 @@ from pydantic_ai.messages import (
     ModelResponse,
     SystemPromptPart,
     TextPart,
+    ToolCallPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 
@@ -38,18 +40,90 @@ Output a single paragraph in the same language as the conversation.
 {conversation}"""
 
 
+_TOOL_RESULT_PREVIEW = 400  # cap per tool result so summaries stay short
+
+
 def _extract_text(msg: ModelMessage) -> str:
-    """Extract readable text from a ModelMessage for summarization."""
+    """Extract readable text from a ModelMessage for summarization.
+
+    Includes tool calls + (truncated) results so the summary preserves
+    the agent's reasoning chain, not just plain chat turns.
+    """
     parts: list[str] = []
     if isinstance(msg, ModelRequest):
         for p in msg.parts:
             if isinstance(p, UserPromptPart) and isinstance(p.content, str):
                 parts.append(f"User: {p.content}")
+            elif isinstance(p, ToolReturnPart):
+                content = p.content if isinstance(p.content, str) else str(p.content)
+                if len(content) > _TOOL_RESULT_PREVIEW:
+                    content = content[:_TOOL_RESULT_PREVIEW] + "...(truncated)"
+                parts.append(f"Tool[{p.tool_name}] result: {content}")
     elif isinstance(msg, ModelResponse):
         for p in msg.parts:
             if isinstance(p, TextPart):
                 parts.append(f"Assistant: {p.content}")
+            elif isinstance(p, ToolCallPart):
+                args = p.args if isinstance(p.args, str) else str(p.args)
+                parts.append(f"Assistant called tool[{p.tool_name}]({args})")
     return "\n".join(parts)
+
+
+def _sanitize_history(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Drop orphaned tool messages that would make OpenAI/DeepSeek reject the request.
+
+    Walks forward, tracking the set of tool_call_ids announced by the most recent
+    assistant ModelResponse. Drops any ToolReturnPart whose tool_call_id is not in
+    that set. Drops a request-message entirely if all of its parts get filtered out.
+    """
+    cleaned: list[ModelMessage] = []
+    open_call_ids: set[str] = set()
+
+    for msg in messages:
+        if isinstance(msg, ModelResponse):
+            ids_in_msg = {
+                p.tool_call_id for p in msg.parts if isinstance(p, ToolCallPart)
+            }
+            if ids_in_msg:
+                open_call_ids = ids_in_msg
+            cleaned.append(msg)
+            continue
+
+        if isinstance(msg, ModelRequest):
+            kept_parts = []
+            for p in msg.parts:
+                if isinstance(p, ToolReturnPart):
+                    if p.tool_call_id in open_call_ids:
+                        kept_parts.append(p)
+                        open_call_ids.discard(p.tool_call_id)
+                    # else: orphan — drop silently
+                else:
+                    kept_parts.append(p)
+            if kept_parts:
+                cleaned.append(ModelRequest(parts=kept_parts))
+            continue
+
+        cleaned.append(msg)
+
+    return cleaned
+
+
+def _find_safe_split(messages: list[ModelMessage], target_keep: int) -> int:
+    """Find a slice index so messages[idx:] preserves tool_call ↔ tool_result pairs.
+
+    Returns the smallest index >= len(messages) - target_keep at which the kept
+    suffix starts with a user-turn (ModelRequest containing a UserPromptPart).
+    A user turn is always a safe boundary because it cannot be the result-half
+    of a tool pair. Returns len(messages) when no safe boundary exists in range.
+    """
+    target = max(0, len(messages) - target_keep)
+    for idx in range(target, len(messages)):
+        msg = messages[idx]
+        if isinstance(msg, ModelRequest) and any(
+            isinstance(p, UserPromptPart) for p in msg.parts
+        ):
+            return idx
+    return len(messages)
 
 
 class SummarizingMemory(Memory):
@@ -78,7 +152,17 @@ class SummarizingMemory(Memory):
         self._pending: set[str] = set()  # conversation IDs currently being summarized
 
     async def get(self, conversation_id: str) -> list[ModelMessage] | None:
-        return await self._store.get(conversation_id)
+        messages = await self._store.get(conversation_id)
+        if not messages:
+            return messages
+        sanitized = _sanitize_history(messages)
+        if len(sanitized) != len(messages):
+            logger.warning(
+                "conv=%s: sanitized history (%d → %d msgs, dropped orphaned tool messages)",
+                conversation_id[:8], len(messages), len(sanitized),
+            )
+            await self._store.set(conversation_id, sanitized)
+        return sanitized
 
     async def set(self, conversation_id: str, messages: list[ModelMessage]) -> None:
         # Save immediately — user already has the response
@@ -99,8 +183,16 @@ class SummarizingMemory(Memory):
     async def _summarize_and_save(self, conversation_id: str, messages: list[ModelMessage]) -> None:
         self._pending.add(conversation_id)
         try:
-            old = messages[:-self._keep_recent]
-            recent = messages[-self._keep_recent:]
+            split = _find_safe_split(messages, self._keep_recent)
+            if split <= 0 or split >= len(messages):
+                logger.warning(
+                    "conv=%s: no safe split point (keep_recent=%d, total=%d), skipping",
+                    conversation_id[:8], self._keep_recent, len(messages),
+                )
+                return
+
+            old = messages[:split]
+            recent = messages[split:]
 
             conv_lines = [_extract_text(m) for m in old]
             conversation = "\n".join(line for line in conv_lines if line)

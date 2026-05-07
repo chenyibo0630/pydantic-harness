@@ -31,6 +31,45 @@ from sandbox_service.schemas import (
     WriteFileRequest,
 )
 
+_LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
+
+
+class _RenameUvicornError(logging.Formatter):
+    """Display 'uvicorn.error' as 'uvicorn' — the name is a uvicorn legacy
+    misnomer (it carries lifecycle/info messages, not just errors)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        if record.name == "uvicorn.error":
+            record.name = "uvicorn"
+        return super().format(record)
+
+
+def _setup_logging() -> None:
+    """Apply timestamped format to root logger and uvicorn's handlers.
+
+    Uvicorn configures its own ('uvicorn', 'uvicorn.error', 'uvicorn.access')
+    loggers before importing the app, so we override their formatters here
+    instead of relying on log propagation.
+    """
+    formatter = _RenameUvicornError(_LOG_FORMAT)
+    level = os.environ.get("SANDBOX_LOG_LEVEL", "INFO").upper()
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
+    else:
+        for h in root.handlers:
+            h.setFormatter(formatter)
+
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        for h in logging.getLogger(name).handlers:
+            h.setFormatter(formatter)
+
+
+_setup_logging()
 logger = logging.getLogger(__name__)
 
 _SANDBOX_TOKEN = os.environ.get("SANDBOX_TOKEN", "")

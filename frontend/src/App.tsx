@@ -1,10 +1,17 @@
 import { useRef, useState } from "react";
 import styles from "./App.module.css";
 
+interface ToolCallEntry {
+  name: string;
+  callId: string;
+  elapsed?: number;
+  done?: boolean;
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
-  toolCalls?: string[];
+  toolCalls?: ToolCallEntry[];
 }
 
 interface UsageInfo {
@@ -110,13 +117,45 @@ export function App() {
               setMessages((prev) => {
                 const updated = [...prev];
                 const last = updated[updated.length - 1];
+                const newEntry: ToolCallEntry = {
+                  name: data.tool_name,
+                  callId: data.tool_call_id,
+                };
                 updated[updated.length - 1] = {
                   ...last,
-                  toolCalls: [...(last.toolCalls || []), data.tool_name],
+                  toolCalls: [...(last.toolCalls || []), newEntry],
                 };
                 return updated;
               });
               scrollToBottom();
+            }
+
+            if (event === "tool_progress") {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (!last.toolCalls) return prev;
+                const newCalls = last.toolCalls.map((tc) =>
+                  tc.callId === data.tool_call_id
+                    ? { ...tc, elapsed: data.elapsed }
+                    : tc
+                );
+                updated[updated.length - 1] = { ...last, toolCalls: newCalls };
+                return updated;
+              });
+            }
+
+            if (event === "tool_result") {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (!last.toolCalls) return prev;
+                const newCalls = last.toolCalls.map((tc) =>
+                  tc.callId === data.tool_call_id ? { ...tc, done: true } : tc
+                );
+                updated[updated.length - 1] = { ...last, toolCalls: newCalls };
+                return updated;
+              });
             }
 
             if (event === "message_end" && data.usage) {
@@ -178,8 +217,21 @@ export function App() {
             <span className={styles.role}>{msg.role}</span>
             {msg.toolCalls && msg.toolCalls.length > 0 && (
               <div className={styles.toolCalls}>
-                {msg.toolCalls.map((name, j) => (
-                  <span key={j} className={styles.toolBadge}>{name}</span>
+                {msg.toolCalls.map((tc, j) => (
+                  <span
+                    key={j}
+                    className={`${styles.toolBadge} ${
+                      tc.done ? styles.toolBadgeDone : styles.toolBadgeRunning
+                    }`}
+                  >
+                    {tc.name}
+                    {!tc.done && tc.elapsed !== undefined && tc.elapsed > 0 && (
+                      <span className={styles.elapsed}>
+                        {" "}
+                        {tc.elapsed.toFixed(1)}s
+                      </span>
+                    )}
+                  </span>
                 ))}
               </div>
             )}

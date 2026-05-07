@@ -30,10 +30,19 @@ class RemoteSandbox(Sandbox):
             headers=headers,
         )
 
-    def _call(self, endpoint: str, payload: dict) -> str:
-        """POST to sandbox service and return output or raise appropriate error."""
+    def _call(self, endpoint: str, payload: dict, *, http_timeout: float | None = None) -> str:
+        """POST to sandbox service and return output or raise appropriate error.
+
+        Pass http_timeout to override the client default for slow operations
+        (e.g. execute_command with a long subprocess timeout). The buffer
+        should exceed the server-side command timeout so we don't give up
+        before the sandbox does.
+        """
+        kwargs: dict = {"json": payload}
+        if http_timeout is not None:
+            kwargs["timeout"] = http_timeout
         try:
-            resp = self._client.post(endpoint, json=payload)
+            resp = self._client.post(endpoint, **kwargs)
         except httpx.ConnectError as exc:
             raise CommandError(f"Sandbox service unreachable: {exc}")
         except httpx.TimeoutException as exc:
@@ -58,10 +67,14 @@ class RemoteSandbox(Sandbox):
         else:
             raise ToolError(message, code=code)
 
-    def execute_command(self, command: str, workdir: str = "/workspace", timeout: int = 30) -> str:
-        return self._call("/sandbox/execute_command", {
-            "command": command, "workdir": workdir, "timeout": timeout,
-        })
+    def execute_command(self, command: str, workdir: str = ".", timeout: int = 120) -> str:
+        # HTTP timeout must exceed the server-side subprocess timeout, otherwise
+        # the client gives up while the sandbox is still working.
+        return self._call(
+            "/sandbox/execute_command",
+            {"command": command, "workdir": workdir, "timeout": timeout},
+            http_timeout=timeout + 15,
+        )
 
     def read_file(self, path: str, start_line: int = 0, end_line: int = 0) -> str:
         return self._call("/sandbox/read_file", {
@@ -83,12 +96,12 @@ class RemoteSandbox(Sandbox):
             "path": path, "max_depth": max_depth,
         })
 
-    def glob_files(self, pattern: str, path: str = "/workspace") -> str:
+    def glob_files(self, pattern: str, path: str = ".") -> str:
         return self._call("/sandbox/glob_files", {
             "pattern": pattern, "path": path,
         })
 
-    def grep_search(self, pattern: str, path: str = "/workspace", glob: str = "", context: int = 0) -> str:
+    def grep_search(self, pattern: str, path: str = ".", glob: str = "", context: int = 0) -> str:
         return self._call("/sandbox/grep_search", {
             "pattern": pattern, "path": path, "glob": glob, "context": context,
         })

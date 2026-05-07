@@ -16,7 +16,7 @@ server:
   port: 8000
   cors_origins:
     - "*"
-  stream_timeout: 120.0
+  stream_timeout: 60.0  # idle timeout: max seconds between SSE events (not total stream time)
   log_level: INFO
 
 agent:

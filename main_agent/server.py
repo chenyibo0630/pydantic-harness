@@ -25,14 +25,26 @@ _LOG_DIR = Path(__file__).parent / "logs"
 _LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
 
 
+class _RenameUvicornError(logging.Formatter):
+    """Display 'uvicorn.error' as 'uvicorn' — the name is a uvicorn legacy
+    misnomer (it carries lifecycle/info messages, not just errors)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        if record.name == "uvicorn.error":
+            record.name = "uvicorn"
+        return super().format(record)
+
+
 def _setup_logging(level: str) -> None:
     _LOG_DIR.mkdir(exist_ok=True)
+    formatter = _RenameUvicornError(_LOG_FORMAT)
+
     root = logging.getLogger()
     root.setLevel(level)
 
     # console
     console = logging.StreamHandler()
-    console.setFormatter(logging.Formatter(_LOG_FORMAT))
+    console.setFormatter(formatter)
     root.addHandler(console)
 
     # file — 10 MB per file, keep 5 backups
@@ -42,8 +54,13 @@ def _setup_logging(level: str) -> None:
         backupCount=5,
         encoding="utf-8",
     )
-    file_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    file_handler.setFormatter(formatter)
     root.addHandler(file_handler)
+
+    # Override uvicorn's own logger handlers (they don't propagate to root)
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        for h in logging.getLogger(name).handlers:
+            h.setFormatter(formatter)
 
 
 class _SimpleRegistry:

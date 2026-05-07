@@ -7,9 +7,10 @@ services:
     expose:
       - "8100"
     volumes:
-      - workspace:/app/workspace
+      - D:/develop/learning/harness-workspace:/app/workspace
       - ./skills:/app/skills:ro
     environment:
+      - TZ=${TZ:-Asia/Shanghai}
       - PYTHONPATH=/app
       - SANDBOX_WORKSPACE=/app/workspace
       - SANDBOX_SKILLS_DIR=/app/skills
@@ -43,6 +44,7 @@ services:
     volumes:
       - ./main_agent/config.yaml:/app/main_agent/config.yaml:ro
     environment:
+      - TZ=${TZ:-Asia/Shanghai}
       - PYTHONPATH=/app
       - SANDBOX_TYPE=remote
       - SANDBOX_REMOTE_URL=http://sandbox:8100
@@ -57,9 +59,9 @@ services:
       context: frontend/
     ports:
       - "3000:80"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
     depends_on:
       - backend
     restart: unless-stopped
 
-volumes:
-  workspace:

@@ -1,5 +1,10 @@
 FROM python:3.12-slim
 
+# tzdata so $TZ env var resolves to a real zoneinfo
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Install dependencies first (cache-friendly)

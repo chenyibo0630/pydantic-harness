@@ -21,7 +21,7 @@ from backend.core.sandbox.exceptions import (
 
 _VIRTUAL_PREFIX = "/workspace"
 _SKILLS_PREFIX = "/skills"
-_READ_MAX_LINES = 200
+_READ_MAX_LINES = 500
 _MAX_OUTPUT = 8000
 _MAX_SEARCH_RESULTS = 200
 _MAX_CONTEXT_LINES = 5
@@ -93,8 +93,26 @@ class LocalSandbox(Sandbox):
         Supported virtual prefixes:
           /workspace/...  → maps to workspace directory (read/write)
           /skills/...     → maps to skills directory (read-only)
+
+        Real container paths inside the skills/workspace dirs are also
+        accepted and silently normalized to their virtual equivalent — this
+        keeps file ops working when the agent picks up a real path from a
+        SKILL.md `{SCRIPTS_DIR}` placeholder or a tool's stdout.
         """
         vp = virtual_path.replace("\\", "/")
+
+        # Normalize real-path inputs into virtual prefixes
+        if self._skills_dir:
+            sd = str(self._skills_dir).replace("\\", "/").rstrip("/")
+            if vp == sd:
+                vp = _SKILLS_PREFIX
+            elif vp.startswith(sd + "/"):
+                vp = _SKILLS_PREFIX + "/" + vp[len(sd) + 1:]
+        ws = str(self._workspace).replace("\\", "/").rstrip("/")
+        if vp == ws:
+            vp = _VIRTUAL_PREFIX
+        elif vp.startswith(ws + "/"):
+            vp = _VIRTUAL_PREFIX + "/" + vp[len(ws) + 1:]
 
         # /skills/ prefix → read-only skills directory
         if vp.startswith(_SKILLS_PREFIX + "/") or vp == _SKILLS_PREFIX:
@@ -118,7 +136,11 @@ class LocalSandbox(Sandbox):
         elif vp.startswith(_VIRTUAL_PREFIX):
             vp = vp[len(_VIRTUAL_PREFIX):]
         elif vp.startswith("/"):
-            raise PathDeniedError(f"Absolute paths outside /workspace and /skills are not allowed: {virtual_path}")
+            raise PathDeniedError(
+                f"Path '{virtual_path}' is outside the workspace. "
+                f"Use a path relative to the workspace root "
+                f"(e.g. 'foo.pdf', 'subdir/bar.txt')."
+            )
 
         if ".." in Path(vp).parts:
             raise PathDeniedError(f"Path traversal not allowed: {virtual_path}")
@@ -135,7 +157,11 @@ class LocalSandbox(Sandbox):
         return resolved
 
     def _to_virtual(self, real_path: Path) -> str:
-        """Convert real path back to virtual path for output masking."""
+        """Convert real path to LLM-visible path.
+
+        Workspace paths return as relative (e.g. "foo.pdf", "subdir/bar.txt").
+        Workspace root returns ".". Skills paths keep the /skills/ prefix.
+        """
         resolved = real_path.resolve()
         if self._skills_dir:
             try:
@@ -145,12 +171,16 @@ class LocalSandbox(Sandbox):
                 pass
         try:
             rel = resolved.relative_to(self._workspace)
-            return f"{_VIRTUAL_PREFIX}/{rel.as_posix()}"
+            return rel.as_posix()
         except ValueError:
             return str(real_path)
 
     def _mask_output(self, text: str) -> str:
-        """Replace real paths with virtual paths in output."""
+        """Replace real paths with LLM-visible paths in shell output.
+
+        Workspace paths collapse to "." (so "/app/workspace/foo" → "./foo").
+        Skills paths keep the /skills/ prefix.
+        """
         result = text
         # Mask skills dir first (longer path takes precedence)
         if self._skills_dir:
@@ -158,11 +188,11 @@ class LocalSandbox(Sandbox):
             result = result.replace(sd, _SKILLS_PREFIX)
             result = result.replace(sd.replace("\\", "/"), _SKILLS_PREFIX)
             result = result.replace(sd.replace("/", "\\"), _SKILLS_PREFIX)
-        # Mask workspace
+        # Mask workspace → "." (relative root)
         ws = str(self._workspace)
-        result = result.replace(ws, _VIRTUAL_PREFIX)
-        result = result.replace(ws.replace("\\", "/"), _VIRTUAL_PREFIX)
-        result = result.replace(ws.replace("/", "\\"), _VIRTUAL_PREFIX)
+        result = result.replace(ws, ".")
+        result = result.replace(ws.replace("\\", "/"), ".")
+        result = result.replace(ws.replace("/", "\\"), ".")
         return result
 
     # ── Command execution ────────────────────────────────────────
@@ -193,7 +223,7 @@ class LocalSandbox(Sandbox):
             return f'"{self._python_path}" {command[len(prefix):]}'
         return command
 
-    def execute_command(self, command: str, workdir: str = "/workspace", timeout: int = 30) -> str:
+    def execute_command(self, command: str, workdir: str = ".", timeout: int = 120) -> str:
         try:
             cwd = self._resolve(workdir)
         except PathDeniedError:
@@ -245,8 +275,21 @@ class LocalSandbox(Sandbox):
             raise FileNotFoundError_(path)
         if not p.is_file():
             raise ToolError(f"Not a file: {path}")
+        if p.suffix.lower() in _BINARY_EXTENSIONS:
+            raise ToolError(
+                f"Cannot read binary file as text: {path} ({p.suffix}). "
+                f"Use a dedicated tool — e.g. for PDFs run "
+                f"`python /skills/pdf/scripts/parse.py text {path}` via bash_execute."
+            )
 
-        lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+        try:
+            text = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ToolError(
+                f"File is not valid UTF-8 ({exc.reason} at byte {exc.start}); "
+                f"appears to be binary. Use a dedicated tool to parse it."
+            )
+        lines = text.splitlines(keepends=True)
         total = len(lines)
 
         start = (start_line - 1) if start_line > 0 else 0
@@ -276,8 +319,13 @@ class LocalSandbox(Sandbox):
             raise FileNotFoundError_(path)
         if not p.is_file():
             raise ToolError(f"Not a file: {path}")
+        if p.suffix.lower() in _BINARY_EXTENSIONS:
+            raise ToolError(f"Cannot edit binary file: {path} ({p.suffix})")
 
-        content = p.read_text(encoding="utf-8")
+        try:
+            content = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ToolError(f"File is not valid UTF-8 ({exc.reason} at byte {exc.start}); cannot edit.")
         count = content.count(old_str)
         if count == 0:
             raise ToolError(f"String not found in {path}")
@@ -350,7 +398,7 @@ class LocalSandbox(Sandbox):
             and not self._has_symlink_ancestor(p, root)
         )
 
-    def glob_files(self, pattern: str, path: str = "/workspace") -> str:
+    def glob_files(self, pattern: str, path: str = ".") -> str:
         root = self._resolve(path)
         if not root.exists():
             raise FileNotFoundError_(path)
@@ -375,7 +423,7 @@ class LocalSandbox(Sandbox):
 
         return "\n".join(lines)
 
-    def grep_search(self, pattern: str, path: str = "/workspace", glob: str = "", context: int = 0) -> str:
+    def grep_search(self, pattern: str, path: str = ".", glob: str = "", context: int = 0) -> str:
         try:
             regex = re.compile(pattern)
         except re.error as e:

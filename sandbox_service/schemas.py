@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field
 
 class ExecuteCommandRequest(BaseModel):
     command: str
-    workdir: str = "/workspace"
-    timeout: int = Field(default=30, le=300)
+    workdir: str = "."
+    timeout: int = Field(default=120, le=300)
 
 
 class ReadFileRequest(BaseModel):
@@ -31,18 +31,18 @@ class StrReplaceRequest(BaseModel):
 
 
 class ListDirRequest(BaseModel):
-    path: str = "/workspace"
+    path: str = "."
     max_depth: int = 2
 
 
 class GlobFilesRequest(BaseModel):
     pattern: str
-    path: str = "/workspace"
+    path: str = "."
 
 
 class GrepSearchRequest(BaseModel):
     pattern: str
-    path: str = "/workspace"
+    path: str = "."
     glob: str = ""
     context: int = 0
 
