@@ -18,7 +18,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.run import AgentRunResultEvent
 
-from backend.core.memory import Memory
+from backend.core.memory import Memory, MemoryDeps
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +98,9 @@ async def stream_agent_response(
     try:
         async with asyncio.timeout(timeout) as deadline:
             events_iter = agent.run_stream_events(
-                message, message_history=history
+                message,
+                message_history=history,
+                deps=MemoryDeps(memory=memory, conversation_id=conv_id),
             ).__aiter__()
 
             async for kind, event in _next_with_heartbeat(

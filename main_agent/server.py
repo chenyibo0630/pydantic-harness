@@ -14,7 +14,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.core.llm import build_model
-from backend.core.memory import InMemoryStore, SummarizingMemory
+from backend.core.memory import (
+    EvictingMemory,
+    InMemoryStore,
+    SummarizingMemory,
+)
 from backend.core.sandbox import init_sandbox
 from backend.core.skills import load_skills, init_skill_tool
 from backend.gateway.routes import router
@@ -100,7 +104,8 @@ async def lifespan(app: FastAPI):
     agent = create_agent(settings, skills=skills)
     app.state.agent_registry = _SimpleRegistry(agent)
     model = build_model(settings.llm)
-    app.state.memory = SummarizingMemory(InMemoryStore(), model=model)
+    base = InMemoryStore()
+    app.state.memory = SummarizingMemory(EvictingMemory(base), model=model)
     app.state.stream_timeout = settings.server.stream_timeout
     yield
 

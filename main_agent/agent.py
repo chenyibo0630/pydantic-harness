@@ -4,6 +4,7 @@ from pydantic_ai import Agent
 from pydantic_ai.settings import ModelSettings
 
 from backend.core.llm import LLMConfig, build_model
+from backend.core.memory import MemoryDeps
 from backend.core.skills import SkillInfo, build_skills_prompt
 from main_agent.config import Settings
 from main_agent.tools.tools import get_available_tools
@@ -16,7 +17,9 @@ def _build_model_settings(llm: LLMConfig) -> ModelSettings:
     return ms
 
 
-def create_agent(settings: Settings, skills: list[SkillInfo] | None = None) -> Agent[None, str]:
+def create_agent(
+    settings: Settings, skills: list[SkillInfo] | None = None
+) -> Agent[MemoryDeps, str]:
     model = build_model(settings.llm)
 
     instructions = settings.system_prompt
@@ -27,6 +30,7 @@ def create_agent(settings: Settings, skills: list[SkillInfo] | None = None) -> A
 
     return Agent(
         model=model,
+        deps_type=MemoryDeps,
         instructions=instructions,
         model_settings=_build_model_settings(settings.llm),
         tools=get_available_tools(),

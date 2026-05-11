@@ -27,7 +27,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from backend.core.memory.base import Memory
+from backend.core.memory.base import EvictedEntry, Memory
 
 logger = logging.getLogger("memory.summarizing")
 
@@ -179,6 +179,29 @@ class SummarizingMemory(Memory):
 
     async def list_conversations(self) -> list[str]:
         return await self._store.list_conversations()
+
+    # ── Tool result cache (pure forwarding) ───────────────────────
+
+    async def put_tool_result(
+        self,
+        conversation_id: str,
+        call_id: str,
+        tool_name: str,
+        content: str,
+    ) -> None:
+        await self._store.put_tool_result(
+            conversation_id, call_id, tool_name, content
+        )
+
+    async def get_tool_result(
+        self, conversation_id: str, call_id: str
+    ) -> str | None:
+        return await self._store.get_tool_result(conversation_id, call_id)
+
+    async def list_tool_results(
+        self, conversation_id: str
+    ) -> list[EvictedEntry]:
+        return await self._store.list_tool_results(conversation_id)
 
     async def _summarize_and_save(self, conversation_id: str, messages: list[ModelMessage]) -> None:
         self._pending.add(conversation_id)

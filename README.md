@@ -10,7 +10,7 @@
 - **多 LLM 提供商**: openai / azure / deepseek / qwen 一套配置
 - **Skills 系统**: 把外部能力(搜索 / PDF / 视频生成)打包成可复用 skill,LLM 自动发现
 - **流式 SSE**: text / tool_call / tool_result / tool_progress(心跳)/ message_end 标准化事件
-- **会话记忆**: in-memory + 摘要式压缩,上下文不爆
+- **会话记忆**: 装饰器分层(摘要压缩 + tool result 驱逐 + 按需 recall),上下文不爆
 
 ## 架构
 
@@ -74,7 +74,8 @@ pydantic-harness/
 │   │   ├── llm/                   # LLM 抽象(build_model)
 │   │   ├── sandbox/               # 沙箱接口 + LocalSandbox + RemoteSandbox
 │   │   ├── prompt/                # Prompt 加载器
-│   │   ├── memory/                # 会话记忆(InMemory + Summarizing)
+│   │   ├── memory/                # 会话记忆 + tool result 驱逐缓存
+│   │   ├── tools/                 # agent 工具(ask_user / recall_tool_result)
 │   │   └── skills/                # Skills 加载与工具暴露
 │   └── gateway/                   # FastAPI 路由 + SSE 流式桥接
 ├── main_agent/                    # 主 Agent
@@ -142,6 +143,8 @@ LLM 可调用的工具(全部经沙箱):
 | `list_dir` | tree 风格列目录 |
 | `glob_files` | glob 匹配文件 |
 | `grep_search` | 正则全文搜索 |
+| `ask_user` | 反问用户(歧义 / 不可逆操作前) |
+| `recall_tool_result` | 按 `call_id` 加载被驱逐的旧工具结果快照 |
 
 **路径约定**: 所有路径相对于工作区根。用 `"."` 表示根本身,`"foo.pdf"` 表示根下文件,`"sub/bar.txt"` 表示嵌套。`/skills/<name>/...` 是唯一的特殊绝对路径(只读)。
 
@@ -156,6 +159,39 @@ LLM 可调用的工具(全部经沙箱):
 | `tool_result` | `{tool_name, tool_call_id, content}` | 工具执行完毕 |
 | `message_end` | `{conversation_id, usage}` | 响应结束 |
 | `error` | `{error, message}` | 异常 |
+
+## 记忆架构
+
+`Memory` ABC 同时管理两类数据,保证存储层级一致(in-memory ↔ in-memory,未来的 file ↔ file 不会出现孤儿):
+
+- **消息历史**: `list[ModelMessage]` per `conversation_id`
+- **Tool result 缓存**: 被 `EvictingMemory` 驱逐的大工具结果,按 `(conversation_id, call_id)` 寻址
+
+运行时组装(server.py 启动时):
+
+```
+SummarizingMemory          # 超过阈值后台异步压缩旧消息为摘要
+  └─ EvictingMemory        # 把超过 min_size 的旧 ToolReturnPart.content 搬到 cache
+       └─ InMemoryStore    # 进程内 dict(消息 + tool cache 都在这)
+```
+
+**驱逐流程**: 每次 `memory.set()` 时,`EvictingMemory` 扫描 `len(messages) - keep_recent` 之前的 `ToolReturnPart`,大于 `min_size` 的把 `content` 搬到缓存,原位换成形如以下的占位符(`tool_call_id` 不动,API 配对不破):
+
+```
+[evicted-tool-result] tool=read_file call_id=call_a3f size=8421chars lines=230
+preview: # README...
+Original tool output was moved to the cache to save context.
+NOTE: this is a snapshot of a past call, NOT current state.
+For fresh data, call the original tool again.
+To reload this exact snapshot, call recall_tool_result(call_id="call_a3f").
+```
+
+**Recall**: LLM 通过 `recall_tool_result(call_id=...)` 工具按需取回原文。工具的 docstring 已经写明何时该用、何时该重调原工具(stale 风险)、何时不该 recall(浪费 token),不需要额外 prompt。`MemoryDeps` 通过 pydantic-ai 的 `RunContext` 注入 `memory + conversation_id`,会话间天然隔离。
+
+调参:
+- `keep_recent=10`(默认)— 最近 N 条消息永不驱逐,保留模型工作窗口
+- `min_size=2000`(默认)— 小于这个字符数的 tool result 不值得换成占位符
+- 占位符自带 `[evicted-tool-result]` 前缀,二次驱逐是 no-op(幂等)
 
 ## 新增 Agent
 
@@ -189,7 +225,6 @@ uv run server.py
 
 - **pydantic-ai** — Agent 框架(`Agent`、`run_stream_events`)
 - **FastAPI** + **SSE** — HTTP 网关
-- **PyMuPDF** — PDF 解析(pdf skill)
 - **React + Vite + TypeScript** — 前端
 - **Docker Compose** — 多服务编排
 - Python 3.12+
