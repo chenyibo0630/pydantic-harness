@@ -22,7 +22,7 @@ from backend.core.memory import (
 from backend.core.sandbox import init_sandbox
 from backend.core.skills import load_skills, init_skill_tool
 from backend.gateway.routes import router
-from main_agent.agent import create_agent
+from main_agent.agent import build_system_prompt, create_agent
 from main_agent.config import get_settings
 
 _LOG_DIR = Path(__file__).parent / "logs"
@@ -66,6 +66,16 @@ def _setup_logging(level: str) -> None:
         for h in logging.getLogger(name).handlers:
             h.setFormatter(formatter)
 
+    # Mute chatty third-party loggers so DEBUG mode stays focused on our
+    # SSE event tracer and tool calls — HTTP libs dump full headers/bodies
+    # at DEBUG, which drowns out the conversation timeline we care about.
+    for name in (
+        "httpx", "httpcore",
+        "anthropic._base_client", "openai._base_client",
+        "asyncio",
+    ):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
 
 class _SimpleRegistry:
     """Minimal registry wrapping a single agent."""
@@ -106,6 +116,7 @@ async def lifespan(app: FastAPI):
     model = build_model(settings.llm)
     base = InMemoryStore()
     app.state.memory = SummarizingMemory(EvictingMemory(base), model=model)
+    app.state.build_system_prompt = lambda: build_system_prompt(settings, skills)
     app.state.stream_timeout = settings.server.stream_timeout
     yield
 

@@ -9,13 +9,14 @@ services:
     volumes:
       - D:/develop/learning/harness-workspace:/app/workspace
       - ./skills:/app/skills:ro
+      # Shared config — sandbox reads `sandbox.token` / `sandbox.allow_no_auth`
+      # from the same file the backend uses, so the two stay in sync.
+      - ./main_agent/config.yaml:/app/main_agent/config.yaml:ro
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       - PYTHONPATH=/app
       - SANDBOX_WORKSPACE=/app/workspace
       - SANDBOX_SKILLS_DIR=/app/skills
-      - SANDBOX_TOKEN=${SANDBOX_TOKEN:-}
-      - SANDBOX_ALLOW_NO_AUTH=${SANDBOX_ALLOW_NO_AUTH:-}
     user: "1000:1000"
     read_only: true
     tmpfs:
@@ -48,7 +49,6 @@ services:
       - PYTHONPATH=/app
       - SANDBOX_TYPE=remote
       - SANDBOX_REMOTE_URL=http://sandbox:8100
-      - SANDBOX_TOKEN=${SANDBOX_TOKEN:-}
     depends_on:
       sandbox:
         condition: service_healthy

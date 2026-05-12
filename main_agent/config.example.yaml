@@ -33,6 +33,18 @@ agent:
   skills:
     - tavily
 
+sandbox:
+  # type: local (in-process, dev) | remote (call sandbox container via HTTP)
+  type: local
+  remote_url: http://sandbox:8100   # used when type=remote
+  timeout: 60
+  # Auth — backend sends `Authorization: Bearer <token>`, sandbox validates.
+  # Either set `token` to a long random secret (e.g. `openssl rand -hex 32`)
+  # OR set `allow_no_auth: true` to explicitly opt out for local dev.
+  # Sandbox refuses to start if NEITHER is set.
+  token: ""
+  allow_no_auth: true   # change to false + set token for production
+
 # Skill API keys are provided via environment variables (not in this file).
 # Each skill's SKILL.md declares required_env in frontmatter.
 # Example: set TAVILY_API_KEY in .env or system environment to enable the tavily skill.

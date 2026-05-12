@@ -19,6 +19,7 @@ def app(settings):
     agent = create_agent(settings)
     test_app.state.agent_registry = _SimpleRegistry(agent)
     test_app.state.memory = InMemoryStore()
+    test_app.state.build_system_prompt = lambda: "test-system-prompt"
     test_app.state.stream_timeout = settings.server.stream_timeout
     return test_app
 

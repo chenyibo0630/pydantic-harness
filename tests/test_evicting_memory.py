@@ -1,4 +1,4 @@
-"""Tests for EvictingMemory + InMemoryStore tool result cache."""
+"""Tests for EvictingMemory (always-evict) + InMemoryStore tool result cache."""
 
 import pytest
 from pydantic_ai.messages import (
@@ -93,14 +93,13 @@ async def test_in_memory_list_conversations_includes_cache_only(
     assert "conv-only-cache" in convs
 
 
-# ── EvictingMemory ──────────────────────────────────────────────────
+# ── EvictingMemory: always-evict ────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_short_history_passes_through_unchanged(
-    base_store: InMemoryStore,
-) -> None:
-    mem = EvictingMemory(base_store, keep_recent=10)
+async def test_no_tool_returns_means_no_changes(base_store: InMemoryStore) -> None:
+    """A history with no tool returns must pass through unchanged."""
+    mem = EvictingMemory(base_store)
     messages = [_user("hi"), _assistant_text("hello")]
 
     await mem.set("conv-1", messages)
@@ -109,62 +108,54 @@ async def test_short_history_passes_through_unchanged(
 
 
 @pytest.mark.asyncio
-async def test_large_old_tool_result_is_evicted(
+async def test_every_large_tool_result_is_evicted(
     base_store: InMemoryStore,
 ) -> None:
-    mem = EvictingMemory(base_store, keep_recent=2, min_size=100)
-    big_content = "x" * 5000
+    """No 'recent' window — every ToolReturnPart >= min_size is evicted,
+    including the very last one written in the same set() call."""
+    mem = EvictingMemory(base_store, min_size=100)
+    big_a = "a" * 5000
+    big_b = "b" * 5000
+    big_c = "c" * 5000
     messages = [
-        _user("read README"),
+        _user("q1"),
         _assistant_call("read_file", "call-a"),
-        _tool_return("read_file", "call-a", big_content),
-        _assistant_text("done"),
-        _user("now what"),
-        _assistant_text("..."),
-    ]
-
-    await mem.set("conv-1", messages)
-    stored = await mem.get("conv-1")
-
-    part = stored[2].parts[0]
-    assert part.content.startswith(PLACEHOLDER_MARKER)
-    assert part.tool_call_id == "call-a"
-    assert "5000" in part.content
-
-    # Original content is now in the same store's tool result cache.
-    assert await mem.get_tool_result("conv-1", "call-a") == big_content
-
-
-@pytest.mark.asyncio
-async def test_recent_tool_result_is_not_evicted(
-    base_store: InMemoryStore,
-) -> None:
-    mem = EvictingMemory(base_store, keep_recent=2, min_size=100)
-    big = "y" * 500
-    messages = [
-        _user("q"),
-        _assistant_call("read_file", "call-a"),
-        _tool_return("read_file", "call-a", big),
+        _tool_return("read_file", "call-a", big_a),
+        _user("q2"),
+        _assistant_call("read_file", "call-b"),
+        _tool_return("read_file", "call-b", big_b),
+        _user("q3"),
+        _assistant_call("read_file", "call-c"),
+        _tool_return("read_file", "call-c", big_c),
         _assistant_text("done"),
     ]
     await mem.set("conv-1", messages)
     stored = await mem.get("conv-1")
-    assert stored[2].parts[0].content == big
-    assert await mem.get_tool_result("conv-1", "call-a") is None
+
+    # All three tool returns are placeholders, including the newest.
+    for idx, call_id, original in (
+        (2, "call-a", big_a),
+        (5, "call-b", big_b),
+        (8, "call-c", big_c),
+    ):
+        part = stored[idx].parts[0]
+        assert part.content.startswith(PLACEHOLDER_MARKER), f"call_id={call_id}"
+        assert part.tool_call_id == call_id
+        assert await mem.get_tool_result("conv-1", call_id) == original
 
 
 @pytest.mark.asyncio
 async def test_small_tool_result_below_min_size_is_kept(
     base_store: InMemoryStore,
 ) -> None:
-    mem = EvictingMemory(base_store, keep_recent=1, min_size=5000)
-    small = "tiny"
+    """Tiny results aren't worth a placeholder — keep them inline."""
+    mem = EvictingMemory(base_store, min_size=500)
+    small = "ok"
     messages = [
-        _user("q1"),
-        _assistant_call("read_file", "call-a"),
-        _tool_return("read_file", "call-a", small),
-        _user("q2"),
-        _assistant_text("a2"),
+        _user("q"),
+        _assistant_call("noop", "call-a"),
+        _tool_return("noop", "call-a", small),
+        _assistant_text("done"),
     ]
     await mem.set("conv-1", messages)
     stored = await mem.get("conv-1")
@@ -173,18 +164,40 @@ async def test_small_tool_result_below_min_size_is_kept(
 
 
 @pytest.mark.asyncio
-async def test_placeholder_is_idempotent_on_second_eviction(
+async def test_placeholder_format_is_byte_stable_across_runs(
     base_store: InMemoryStore,
 ) -> None:
-    mem = EvictingMemory(base_store, keep_recent=1, min_size=10)
-    big = "z" * 200
-    messages = [
+    """The placeholder must be deterministic given the same tool/call/content
+    — this is what makes the stored prefix byte-stable for prompt caching."""
+    big = "z" * 2000
+    msgs = [
         _user("q"),
         _assistant_call("read_file", "call-a"),
         _tool_return("read_file", "call-a", big),
-        _user("q2"),
     ]
-    await mem.set("conv-1", messages)
+
+    mem_a = EvictingMemory(InMemoryStore(), min_size=100)
+    mem_b = EvictingMemory(InMemoryStore(), min_size=100)
+    await mem_a.set("conv-1", list(msgs))
+    await mem_b.set("conv-1", list(msgs))
+
+    placeholder_a = (await mem_a.get("conv-1"))[2].parts[0].content
+    placeholder_b = (await mem_b.get("conv-1"))[2].parts[0].content
+    assert placeholder_a == placeholder_b
+
+
+@pytest.mark.asyncio
+async def test_idempotent_on_repeated_set(base_store: InMemoryStore) -> None:
+    """Calling set() with the same conversation twice yields byte-identical
+    storage — placeholders are already placeholders the second time."""
+    mem = EvictingMemory(base_store, min_size=10)
+    big = "x" * 200
+    msgs = [
+        _user("q"),
+        _assistant_call("read_file", "call-a"),
+        _tool_return("read_file", "call-a", big),
+    ]
+    await mem.set("conv-1", msgs)
     first = await mem.get("conv-1")
     first_placeholder = first[2].parts[0].content
 
@@ -198,13 +211,12 @@ async def test_placeholder_is_idempotent_on_second_eviction(
 async def test_tool_call_pairing_preserved(base_store: InMemoryStore) -> None:
     """tool_call_id on the evicted ToolReturnPart must still match its
     upstream ToolCallPart, otherwise OpenAI/Anthropic reject the history."""
-    mem = EvictingMemory(base_store, keep_recent=1, min_size=10)
+    mem = EvictingMemory(base_store, min_size=10)
     big = "w" * 300
     messages = [
         _user("q"),
         _assistant_call("read_file", "call-xyz"),
         _tool_return("read_file", "call-xyz", big),
-        _user("q2"),
     ]
     await mem.set("conv-1", messages)
     stored = await mem.get("conv-1")
@@ -218,7 +230,7 @@ async def test_tool_call_pairing_preserved(base_store: InMemoryStore) -> None:
 async def test_delete_clears_cache_via_inner_store(
     base_store: InMemoryStore,
 ) -> None:
-    mem = EvictingMemory(base_store, keep_recent=1, min_size=10)
+    mem = EvictingMemory(base_store, min_size=10)
     big = "x" * 200
     await mem.set(
         "conv-1",
@@ -226,7 +238,6 @@ async def test_delete_clears_cache_via_inner_store(
             _user("q"),
             _assistant_call("read_file", "call-a"),
             _tool_return("read_file", "call-a", big),
-            _user("q2"),
         ],
     )
     assert await mem.get_tool_result("conv-1", "call-a") == big
@@ -234,12 +245,6 @@ async def test_delete_clears_cache_via_inner_store(
     await mem.delete("conv-1")
     assert await mem.get("conv-1") is None
     assert await mem.get_tool_result("conv-1", "call-a") is None
-
-
-@pytest.mark.asyncio
-async def test_invalid_keep_recent_rejected(base_store: InMemoryStore) -> None:
-    with pytest.raises(ValueError):
-        EvictingMemory(base_store, keep_recent=-1)
 
 
 @pytest.mark.asyncio

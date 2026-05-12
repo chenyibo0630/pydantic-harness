@@ -1,8 +1,9 @@
 """In-memory conversation store — simple dict-based, lost on restart.
 
-Holds both the message history and the tool result cache. Same tier (RAM)
-for both keeps restart semantics consistent: a process restart clears
-everything atomically, no orphan cache entries.
+Holds message history, the evicted tool result cache, and the per-session
+system prompt snapshot. Same tier (RAM) for all three keeps restart
+semantics consistent: a process restart clears everything atomically, no
+orphan entries.
 """
 
 from pydantic_ai.messages import ModelMessage
@@ -14,6 +15,7 @@ class InMemoryStore(Memory):
     def __init__(self) -> None:
         self._messages: dict[str, list[ModelMessage]] = {}
         self._tool_results: dict[str, dict[str, dict[str, str]]] = {}
+        self._system_prompts: dict[str, str] = {}
 
     # ── Message history ───────────────────────────────────────────
 
@@ -26,9 +28,16 @@ class InMemoryStore(Memory):
     async def delete(self, conversation_id: str) -> None:
         self._messages.pop(conversation_id, None)
         self._tool_results.pop(conversation_id, None)
+        self._system_prompts.pop(conversation_id, None)
 
     async def list_conversations(self) -> list[str]:
-        return list({*self._messages.keys(), *self._tool_results.keys()})
+        return list(
+            {
+                *self._messages.keys(),
+                *self._tool_results.keys(),
+                *self._system_prompts.keys(),
+            }
+        )
 
     # ── Tool result cache ─────────────────────────────────────────
 
@@ -60,3 +69,13 @@ class InMemoryStore(Memory):
             )
             for cid, entry in bucket.items()
         ]
+
+    # ── System prompt snapshot ────────────────────────────────────
+
+    async def put_system_prompt(
+        self, conversation_id: str, content: str
+    ) -> None:
+        self._system_prompts[conversation_id] = content
+
+    async def get_system_prompt(self, conversation_id: str) -> str | None:
+        return self._system_prompts.get(conversation_id)

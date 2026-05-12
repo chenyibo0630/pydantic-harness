@@ -26,6 +26,10 @@ class SandboxConfig(BaseModel):
     remote_url: str = "http://sandbox:8100"
     token: str = ""
     timeout: int = 60
+    # Sandbox-side: explicit opt-in to run without a Bearer token. Refused
+    # at sandbox startup unless either `token` is set OR `allow_no_auth` is
+    # True. Never enable in production.
+    allow_no_auth: bool = False
 
 
 class AgentConfig(BaseModel):

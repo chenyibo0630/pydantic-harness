@@ -29,6 +29,51 @@ _sandbox: Sandbox | None = None
 
 F = TypeVar("F", bound=Callable[..., str])
 
+# ── Output truncation ────────────────────────────────────────────
+#
+# A single tool result is fed straight into the model's context. Without a
+# hard ceiling, one rogue `bash_execute` or sprawling `grep_search` can blow
+# the window or starve the rest of the turn. We cap each tool's output at
+# 30,000 characters — the same limit Claude Code applies to its Bash tool —
+# and let the model re-narrow if it cared about the dropped tail.
+
+_MAX_OUTPUT_CHARS = 30_000
+
+
+def _truncate_head(text: str, max_chars: int = _MAX_OUTPUT_CHARS) -> str:
+    """Keep the first ``max_chars`` characters; drop the rest.
+
+    Use for results where relevance is front-loaded: grep matches (file
+    order), glob paths (mtime-sorted), list_dir (alphabetical), read_file
+    (sequential bytes — caller can re-read later lines).
+    """
+    if len(text) <= max_chars:
+        return text
+    return (
+        text[:max_chars]
+        + f"\n\n[truncated: output was {len(text):,} chars, kept first "
+        f"{max_chars:,}. Narrow the query (pattern, glob, range) and re-run "
+        "to see more.]"
+    )
+
+
+def _truncate_middle(text: str, max_chars: int = _MAX_OUTPUT_CHARS) -> str:
+    """Keep both ends, drop the middle.
+
+    Use for bash output where the interesting bits (the command echo / first
+    error, plus the final result / stack trace) cluster at the head and tail;
+    long build-log middles are usually repetitive noise.
+    """
+    if len(text) <= max_chars:
+        return text
+    half = (max_chars - 80) // 2
+    dropped = len(text) - 2 * half
+    return (
+        text[:half]
+        + f"\n\n[... truncated {dropped:,} chars in the middle ...]\n\n"
+        + text[-half:]
+    )
+
 
 def init_sandbox(
     workspace: str,
@@ -123,12 +168,17 @@ def bash_execute(command: str, workdir: str = ".", timeout: int = 120) -> str:
     root itself. For slow commands (pandoc, pip install, font scans, large
     builds) pass timeout >= 180. Default is 120s; absolute max is 300s.
 
+    Output longer than 30,000 characters is truncated in the **middle**
+    (head + tail kept, middle elided) so both the command echo / setup and
+    the final result / error message survive. Pipe through `head`, `tail`,
+    or `grep` if you need to see the dropped part.
+
     Args:
         command: The shell command to execute.
         workdir: Working directory relative to workspace. Default ".".
         timeout: Timeout in seconds. Default 120.
     """
-    return get_sandbox().execute_command(command, workdir, timeout)
+    return _truncate_middle(get_sandbox().execute_command(command, workdir, timeout))
 
 
 @_safe_tool
@@ -144,7 +194,7 @@ def read_file(path: str, start_line: int = 0, end_line: int = 0) -> str:
         start_line: First line (1-based). 0 means start of file.
         end_line: Last line (1-based inclusive). 0 means end of file.
     """
-    return get_sandbox().read_file(path, start_line, end_line)
+    return _truncate_head(get_sandbox().read_file(path, start_line, end_line))
 
 
 @_safe_tool
@@ -219,4 +269,4 @@ def grep_search(pattern: str, path: str = ".", glob: str = "", context: int = 0)
         glob: Glob pattern to filter files, e.g. "*.py".
         context: Number of context lines before and after each match.
     """
-    return get_sandbox().grep_search(pattern, path, glob, context)
+    return _truncate_head(get_sandbox().grep_search(pattern, path, glob, context))

@@ -1,22 +1,33 @@
-"""EvictingMemory — moves old tool results out of the message history.
+"""EvictingMemory — moves every large tool result out of the message history.
 
 Tool results (file reads, bash logs, search dumps) typically dominate token
 usage in long conversations. ``EvictingMemory`` wraps another ``Memory`` and,
-on every ``set()``, walks the history looking for old ``ToolReturnPart``
-entries large enough to be worth evicting. For each one it:
+on every ``set()``, walks the **entire** history and replaces every
+``ToolReturnPart`` whose content is at least ``min_size`` characters with a
+short, structured placeholder. The original bytes go into the wrapped
+``Memory``'s tool result cache, keyed by ``(conversation_id, tool_call_id)``.
 
-1. Persists the full content to the **same** ``Memory``'s tool result cache,
-   keyed by ``(conversation_id, tool_call_id)``.
-2. Replaces the part's ``content`` in-history with a short, structured
-   placeholder that names the tool, points at the cache, and tells the model
-   how to recall the original.
+**Always-evict** semantics — not a sliding window:
 
-Critically, the ``tool_call_id`` and the surrounding ``ToolCallPart`` are kept
-intact, so the OpenAI/Anthropic ``tool_call ↔ tool_result`` pairing the
+We deliberately do **not** keep "recent" results inline. A sliding window
+would mean the prefix bytes drift every turn as the boundary advances,
+breaking Anthropic prompt cache repeatedly. With always-evict, the stored
+prefix becomes byte-stable from turn 2 onwards: once every tool result is a
+placeholder, the next turn's history bytes match this turn's exactly, and
+prompt cache reads through.
+
+The cost: the model only sees real bytes during the turn the call happened.
+On any subsequent turn it must call ``recall_tool_result(call_id=...)`` to
+re-load the original content. The placeholder includes a preview and call_id
+hint to make that decision easy.
+
+Critically, the ``tool_call_id`` and the surrounding ``ToolCallPart`` are
+kept intact, so the OpenAI/Anthropic ``tool_call ↔ tool_result`` pairing the
 ``_sanitize_history`` logic depends on is preserved.
 
-Placeholder format intentionally avoids the raw original content so re-eviction
-on the next turn becomes a no-op (idempotent).
+Placeholder format intentionally derives only from stable inputs (tool name,
+call_id, content size, preview), so re-eviction on the next turn is a no-op
+(idempotent).
 """
 
 from __future__ import annotations
@@ -47,8 +58,9 @@ def _is_placeholder(content: object) -> bool:
 
 
 def _make_placeholder(part: ToolReturnPart, raw: str) -> str:
-    """Compact summary keeping enough metadata for the model to decide whether
-    to recall."""
+    """Compact, action-first summary. Lead with what was evicted, then surface
+    the two possible follow-ups (recall vs re-invoke) so the model can pick
+    without parsing prose."""
     size = len(raw)
     lines = raw.count("\n") + 1
     preview = raw.replace("\r", " ").replace("\n", " ")[:120].strip()
@@ -58,40 +70,36 @@ def _make_placeholder(part: ToolReturnPart, raw: str) -> str:
         f"{PLACEHOLDER_MARKER} tool={part.tool_name} "
         f"call_id={part.tool_call_id} size={size}chars lines={lines}\n"
         f"preview: {preview}\n"
-        f"Original tool output was moved to the cache to save context. "
-        f"NOTE: this is a snapshot of a past call, NOT current state. "
-        f"For fresh data, call the original tool again. "
-        f"To reload this exact snapshot, call recall_tool_result(call_id=\"{part.tool_call_id}\")."
+        f"To reload the original bytes (past snapshot):  "
+        f"recall_tool_result(call_id=\"{part.tool_call_id}\")\n"
+        f"For current state of the underlying source:    "
+        f"call {part.tool_name} again with the same arguments."
     )
 
 
 class EvictingMemory(Memory):
-    """Memory decorator that evicts large old tool results into the same
-    underlying ``Memory``'s tool result cache.
+    """Memory decorator that evicts **every** large tool result on every
+    ``set()`` into the same underlying ``Memory``'s tool result cache.
 
     Args:
         store: Underlying memory (handles both message history and tool
             result cache — same backing tier for both).
-        keep_recent: Messages within the last ``keep_recent`` are never
-            touched (the live working window).
         min_size: Only evict tool results whose content is at least this many
-            characters. Small results aren't worth a placeholder.
+            characters. Smaller results aren't worth a placeholder (the
+            placeholder itself is ~250 chars; evicting a 100-char result
+            would inflate, not shrink).
     """
 
     def __init__(
         self,
         store: Memory,
         *,
-        keep_recent: int = 10,
-        min_size: int = 2000,
+        min_size: int = 256,
     ) -> None:
-        if keep_recent < 0:
-            raise ValueError("keep_recent must be >= 0")
         if min_size <= 0:
             raise ValueError("min_size must be > 0")
 
         self._store = store
-        self._keep_recent = keep_recent
         self._min_size = min_size
 
     # ── Message history ───────────────────────────────────────────
@@ -135,21 +143,27 @@ class EvictingMemory(Memory):
     ) -> list[EvictedEntry]:
         return await self._store.list_tool_results(conversation_id)
 
+    # ── System prompt snapshot (pure forwarding) ─────────────────
+
+    async def put_system_prompt(
+        self, conversation_id: str, content: str
+    ) -> None:
+        await self._store.put_system_prompt(conversation_id, content)
+
+    async def get_system_prompt(self, conversation_id: str) -> str | None:
+        return await self._store.get_system_prompt(conversation_id)
+
     # ── Eviction ──────────────────────────────────────────────────
 
     async def _evict(
         self, conversation_id: str, messages: list[ModelMessage]
     ) -> list[ModelMessage]:
-        if len(messages) <= self._keep_recent:
-            return messages
-
-        cutoff = len(messages) - self._keep_recent
         result: list[ModelMessage] = []
         evicted_count = 0
         freed_chars = 0
 
-        for idx, msg in enumerate(messages):
-            if idx >= cutoff or not isinstance(msg, ModelRequest):
+        for msg in messages:
+            if not isinstance(msg, ModelRequest):
                 result.append(msg)
                 continue
 

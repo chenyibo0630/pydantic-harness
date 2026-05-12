@@ -12,19 +12,21 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   toolCalls?: ToolCallEntry[];
+  usage?: TokenUsage;
 }
 
-interface UsageInfo {
+interface TokenUsage {
   input_tokens: number | null;
   output_tokens: number | null;
   total_tokens: number | null;
+  cache_read_tokens: number | null;
 }
 
 export function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
-  const [usage, setUsage] = useState<UsageInfo | null>(null);
+  const [usage, setUsage] = useState<TokenUsage | null>(null);
   const [conversationId, setConversationId] = useState(() => crypto.randomUUID());
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -159,7 +161,16 @@ export function App() {
             }
 
             if (event === "message_end" && data.usage) {
-              setUsage(data.usage);
+              const tokenUsage = data.usage as TokenUsage;
+              setUsage(tokenUsage);
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last && last.role === "assistant") {
+                  updated[updated.length - 1] = { ...last, usage: tokenUsage };
+                }
+                return updated;
+              });
             }
 
             if (event === "error") {
@@ -203,7 +214,9 @@ export function App() {
         <h1>pydantic-harness</h1>
         {usage && (
           <span className={styles.usage}>
-            tokens: {usage.total_tokens ?? "?"}
+            in {usage.input_tokens ?? "?"} (cached {usage.cache_read_tokens ?? 0})
+            {" · "}out {usage.output_tokens ?? "?"}
+            {" · "}total {usage.total_tokens ?? "?"}
           </span>
         )}
       </header>
@@ -236,6 +249,19 @@ export function App() {
               </div>
             )}
             <div className={styles.content}>{msg.content}</div>
+            {msg.usage && (
+              <div className={styles.messageUsage}>
+                in {msg.usage.input_tokens ?? "?"}
+                {msg.usage.cache_read_tokens != null &&
+                  msg.usage.cache_read_tokens > 0 && (
+                    <span className={styles.cacheHit}>
+                      {" "}(cached {msg.usage.cache_read_tokens})
+                    </span>
+                  )}
+                {" · "}out {msg.usage.output_tokens ?? "?"}
+                {" · "}total {msg.usage.total_tokens ?? "?"}
+              </div>
+            )}
           </div>
         ))}
         {streaming && (

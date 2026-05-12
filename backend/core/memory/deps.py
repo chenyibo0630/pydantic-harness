@@ -21,7 +21,15 @@ from backend.core.memory.base import Memory
 
 @dataclass(frozen=True)
 class MemoryDeps:
-    """Per-request injection point for memory-aware tools."""
+    """Per-request injection point for memory-aware tools.
+
+    ``system_prompt`` is the frozen snapshot for this conversation; the
+    gateway resolves it (load-or-lock) before each turn. Agents that pass a
+    callable as ``Agent(instructions=...)`` typically just return
+    ``ctx.deps.system_prompt`` so the model sees a byte-identical system
+    message for every LLM call within the conversation.
+    """
 
     memory: Memory
     conversation_id: str
+    system_prompt: str = ""

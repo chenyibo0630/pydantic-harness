@@ -203,6 +203,16 @@ class SummarizingMemory(Memory):
     ) -> list[EvictedEntry]:
         return await self._store.list_tool_results(conversation_id)
 
+    # ── System prompt snapshot (pure forwarding) ─────────────────
+
+    async def put_system_prompt(
+        self, conversation_id: str, content: str
+    ) -> None:
+        await self._store.put_system_prompt(conversation_id, content)
+
+    async def get_system_prompt(self, conversation_id: str) -> str | None:
+        return await self._store.get_system_prompt(conversation_id)
+
     async def _summarize_and_save(self, conversation_id: str, messages: list[ModelMessage]) -> None:
         self._pending.add(conversation_id)
         try:

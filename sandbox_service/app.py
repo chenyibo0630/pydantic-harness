@@ -1,13 +1,20 @@
 """Sandbox Service — standalone FastAPI server wrapping LocalSandbox.
 
 Exposes the Sandbox ABC as HTTP endpoints. Runs as a separate container.
+
+Auth and workspace settings come from the shared ``main_agent/config.yaml``
+(``sandbox.token``, ``sandbox.allow_no_auth``) so the backend and the
+sandbox always agree on the same Bearer token. Env vars are still honored
+as overrides for emergency / ops use.
 """
 
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
+import yaml
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
@@ -72,7 +79,35 @@ def _setup_logging() -> None:
 _setup_logging()
 logger = logging.getLogger(__name__)
 
-_SANDBOX_TOKEN = os.environ.get("SANDBOX_TOKEN", "")
+# Path inside the container. ``docker-compose.yaml`` mounts main_agent's
+# config.yaml here, read-only. Override via SANDBOX_CONFIG_PATH for tests.
+_CONFIG_PATH = Path(
+    os.environ.get("SANDBOX_CONFIG_PATH", "/app/main_agent/config.yaml")
+)
+
+
+def _load_sandbox_config() -> dict:
+    """Read ``sandbox`` section from the shared config.yaml. Returns an
+    empty dict if the file isn't there; callers fall back to defaults."""
+    if not _CONFIG_PATH.exists():
+        logger.warning(
+            "sandbox config not found at %s — using defaults / env vars only",
+            _CONFIG_PATH,
+        )
+        return {}
+    try:
+        raw = yaml.safe_load(_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as e:
+        logger.error("failed to parse %s: %s", _CONFIG_PATH, e)
+        return {}
+    section = raw.get("sandbox", {})
+    return section if isinstance(section, dict) else {}
+
+
+_SANDBOX_CONFIG = _load_sandbox_config()
+# Env var still wins (for one-off operational overrides), config.yaml is the
+# normal source of truth.
+_SANDBOX_TOKEN = os.environ.get("SANDBOX_TOKEN") or _SANDBOX_CONFIG.get("token", "")
 
 
 def _verify_token(request: Request) -> None:
@@ -86,16 +121,18 @@ def _verify_token(request: Request) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    token = os.environ.get("SANDBOX_TOKEN", "")
-    allow_no_auth = os.environ.get("SANDBOX_ALLOW_NO_AUTH", "").lower() == "true"
+    token = _SANDBOX_TOKEN
+    env_allow = os.environ.get("SANDBOX_ALLOW_NO_AUTH", "").lower() == "true"
+    allow_no_auth = env_allow or bool(_SANDBOX_CONFIG.get("allow_no_auth", False))
     if not token and not allow_no_auth:
         raise RuntimeError(
-            "SANDBOX_TOKEN not set. Refusing to start an unauthenticated sandbox. "
-            "For local dev, set SANDBOX_ALLOW_NO_AUTH=true explicitly."
+            f"Refusing to start an unauthenticated sandbox. Set "
+            f"`sandbox.token` in {_CONFIG_PATH} to a non-empty value, or "
+            f"set `sandbox.allow_no_auth: true` explicitly for local dev."
         )
     if not token and allow_no_auth:
         logger.warning(
-            "Sandbox running WITHOUT authentication (SANDBOX_ALLOW_NO_AUTH=true). "
+            "Sandbox running WITHOUT authentication (allow_no_auth=true). "
             "Do not use in production."
         )
 

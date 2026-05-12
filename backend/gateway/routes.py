@@ -22,6 +22,9 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         return JSONResponse(status_code=404, content=error.model_dump())
 
     timeout = getattr(request.app.state, "stream_timeout", _DEFAULT_STREAM_TIMEOUT)
+    build_system_prompt = getattr(
+        request.app.state, "build_system_prompt", lambda: ""
+    )
     disconnected = asyncio.Event()
 
     async def watch_disconnect() -> None:
@@ -36,6 +39,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
             agent,
             body.message,
             memory=memory,
+            build_system_prompt=build_system_prompt,
             conversation_id=body.conversation_id,
             timeout=timeout,
             disconnected=disconnected,

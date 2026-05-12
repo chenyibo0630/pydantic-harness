@@ -36,7 +36,10 @@
 ```bash
 # 1. 复制并填写配置
 cp main_agent/config.example.yaml main_agent/config.yaml
-# 填入 llm.api_key / llm.type 等
+# 编辑 main_agent/config.yaml,至少填:
+#   - llm.api_key / llm.type
+#   - sandbox.token (生产)  或  sandbox.allow_no_auth: true (本机 dev)
+#   sandbox 启动会强制校验,两个都没填会拒启
 
 # 2. 准备宿主工作区(默认路径在 docker-compose.yaml)
 mkdir -p D:/develop/learning/harness-workspace
@@ -124,9 +127,8 @@ sandbox:
 ```
 
 环境变量:
-- `SANDBOX_TOKEN` — sandbox HTTP 鉴权(生产必填)
-- `SANDBOX_ALLOW_NO_AUTH=true` — 仅本地开发可关闭鉴权
 - `SANDBOX_LOG_LEVEL` — sandbox 服务日志级别(默认 INFO)
+- `SANDBOX_TOKEN` / `SANDBOX_ALLOW_NO_AUTH` — 通常在 `main_agent/config.yaml` 的 `sandbox` 段配置,但同名 env 仍作为应急 override
 - `TZ` — 容器时区(默认 `Asia/Shanghai`)
 - 各 skill 的 API key:`TAVILY_API_KEY`、`ARK_API_KEY` 等(详见各 skill 的 `SKILL.md`)
 
@@ -157,25 +159,36 @@ LLM 可调用的工具(全部经沙箱):
 | `tool_call` | `{tool_name, tool_call_id}` | LLM 决定调用工具 |
 | `tool_progress` | `{tool_name, tool_call_id, elapsed}` | 工具运行 ≥10s 时心跳 |
 | `tool_result` | `{tool_name, tool_call_id, content}` | 工具执行完毕 |
-| `message_end` | `{conversation_id, usage}` | 响应结束 |
+| `message_end` | `{conversation_id, usage: {input_tokens, output_tokens, total_tokens, cache_read_tokens}}` | 响应结束(`cache_read_tokens` 表示 Anthropic prompt cache 命中量) |
 | `error` | `{error, message}` | 异常 |
 
 ## 记忆架构
 
-`Memory` ABC 同时管理两类数据,保证存储层级一致(in-memory ↔ in-memory,未来的 file ↔ file 不会出现孤儿):
+`Memory` ABC 管理三类 per-conversation 状态,保证存储层级一致(in-memory ↔ in-memory,未来的 file ↔ file 不会出现孤儿):
 
 - **消息历史**: `list[ModelMessage]` per `conversation_id`
 - **Tool result 缓存**: 被 `EvictingMemory` 驱逐的大工具结果,按 `(conversation_id, call_id)` 寻址
+- **系统提示快照**: 会话首轮锁定的 system prompt,后续轮次复用同一份字节
 
 运行时组装(server.py 启动时):
 
 ```
 SummarizingMemory          # 超过阈值后台异步压缩旧消息为摘要
-  └─ EvictingMemory        # 把超过 min_size 的旧 ToolReturnPart.content 搬到 cache
-       └─ InMemoryStore    # 进程内 dict(消息 + tool cache 都在这)
+  └─ EvictingMemory        # 始终把 ≥ min_size 的 ToolReturnPart.content 搬到 cache
+       └─ InMemoryStore    # 进程内 dict(消息 + tool cache + 提示快照 都在这)
 ```
 
-**驱逐流程**: 每次 `memory.set()` 时,`EvictingMemory` 扫描 `len(messages) - keep_recent` 之前的 `ToolReturnPart`,大于 `min_size` 的把 `content` 搬到缓存,原位换成形如以下的占位符(`tool_call_id` 不动,API 配对不破):
+### 系统提示词:会话粒度锁定
+
+`Agent.instructions` 是回调,从 `ctx.deps.system_prompt` 取值。Gateway 在每个请求开头 `load-or-lock`:首轮 `build_system_prompt(settings, skills)` 读盘并 `memory.put_system_prompt()`;后续轮直接 `memory.get_system_prompt()` 复用。
+
+- 改 `SYSTEM.md` / `SOUL.md` / `EXPERIENCE.md` → 只影响**新会话**,进行中的不受影响
+- 同一会话内 LLM 每次调用看到的 system message 字节完全一致 → prompt cache 可命中
+- `memory.delete(conv_id)` 同时清快照,下次进入重新读盘
+
+### Tool result 驱逐:始终 evict(为了 prompt cache 字节稳定)
+
+每次 `memory.set()` 都扫描**所有** `ToolReturnPart`(无 keep_recent 窗口),大于 `min_size` 的把 `content` 搬到缓存,原位换成占位符(`tool_call_id` 不动,API 配对不破):
 
 ```
 [evicted-tool-result] tool=read_file call_id=call_a3f size=8421chars lines=230
@@ -186,11 +199,24 @@ For fresh data, call the original tool again.
 To reload this exact snapshot, call recall_tool_result(call_id="call_a3f").
 ```
 
-**Recall**: LLM 通过 `recall_tool_result(call_id=...)` 工具按需取回原文。工具的 docstring 已经写明何时该用、何时该重调原工具(stale 风险)、何时不该 recall(浪费 token),不需要额外 prompt。`MemoryDeps` 通过 pydantic-ai 的 `RunContext` 注入 `memory + conversation_id`,会话间天然隔离。
+**为什么"始终 evict"而不是滑动窗口**:滑动窗口意味着驱逐边界每轮向后推一格,prefix 字节随之周期性变化,Anthropic prompt cache 每次都 miss。始终 evict 后,从 turn 2 起 stored prefix 完全 byte-stable,长会话场景 cache 命中率接近 100%。
+
+**代价**:模型在 turn N+1 看不到 turn N 的 tool result 原文,只看到占位符。需要原文时调 `recall_tool_result(call_id=...)`。
+
+### Recall
+
+LLM 通过 `recall_tool_result(call_id=...)` 工具按需取回原文。工具的 docstring 已经写明何时该用、何时该重调原工具(stale 风险)、何时不该 recall(浪费 token)。`MemoryDeps` 通过 pydantic-ai 的 `RunContext` 注入 `memory + conversation_id + system_prompt`,会话间天然隔离。
+
+### Anthropic prompt cache
+
+当 `llm.type == "anthropic"` 时,自动在 ModelSettings 里打开:
+- `anthropic_cache_tool_definitions=True` — tool 定义 (~3000 t) 缓存
+- `anthropic_cache_instructions=True` — system 提示 (~800 t) 缓存
+
+两者都是 90% 折扣 × 5 分钟 TTL。配合上面的「系统提示锁定」+「始终 evict」,长会话每轮重复发送的稳定部分基本全部命中 cache。
 
 调参:
-- `keep_recent=10`(默认)— 最近 N 条消息永不驱逐,保留模型工作窗口
-- `min_size=2000`(默认)— 小于这个字符数的 tool result 不值得换成占位符
+- `min_size=256`(默认)— 小于这个字符数的 tool result 不值得换成占位符(placeholder 本身约 250 字符)
 - 占位符自带 `[evicted-tool-result]` 前缀,二次驱逐是 no-op(幂等)
 
 ## 新增 Agent

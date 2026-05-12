@@ -1,18 +1,22 @@
-"""Memory abstraction — stores conversation history per session **and** the
-side-channel cache of evicted tool results.
+"""Memory abstraction — owns every piece of per-conversation persistent state.
 
-A ``Memory`` implementation owns two related stores:
+A ``Memory`` implementation manages three related stores keyed by
+``conversation_id``:
 
-- **Message history**: ``list[ModelMessage]`` keyed by ``conversation_id``.
-  pydantic-ai uses this format for the conversation transcript.
+- **Message history**: ``list[ModelMessage]``. The conversation transcript
+  in pydantic-ai's format.
 - **Tool result cache**: bytes of large tool outputs that ``EvictingMemory``
   moved out of the message history. Keyed by ``(conversation_id, call_id)``.
+- **System prompt snapshot**: the prompt text frozen at the first turn of
+  this conversation. Subsequent turns reuse this snapshot so the system
+  message stays byte-identical across the session, even if the on-disk
+  prompt files change.
 
-Both stores share a backing tier (in-memory ↔ in-memory, file ↔ file). Mixing
+All three share a backing tier (in-memory ↔ in-memory, file ↔ file). Mixing
 tiers would leave orphans after a restart, so the ABC keeps them together.
 
-``delete(conversation_id)`` is responsible for clearing **both** stores for
-the conversation in a single call.
+``delete(conversation_id)`` is responsible for clearing **all three** stores
+for the conversation in a single call.
 """
 
 from abc import ABC, abstractmethod
@@ -74,3 +78,18 @@ class Memory(ABC):
         self, conversation_id: str
     ) -> list[EvictedEntry]:
         """List metadata for every cached tool result in the conversation."""
+
+    # ── System prompt snapshot ────────────────────────────────────
+
+    @abstractmethod
+    async def put_system_prompt(
+        self, conversation_id: str, content: str
+    ) -> None:
+        """Freeze the system prompt for this conversation. Subsequent calls
+        for the same ``conversation_id`` overwrite — callers should only
+        write once, on the first turn."""
+
+    @abstractmethod
+    async def get_system_prompt(self, conversation_id: str) -> str | None:
+        """Return the frozen system prompt for this conversation, or None
+        if it hasn't been locked yet (i.e. brand-new conversation)."""
