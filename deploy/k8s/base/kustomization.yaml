@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pydantic-harness
+
+# Each resource already declares `app.kubernetes.io/part-of` and
+# `app.kubernetes.io/name` labels, so no `commonLabels` is needed here.
+
+resources:
+  - namespace.yaml
+  - limitrange.yaml
+  - sandbox/pvc-workspace.yaml
+  - sandbox/deployment.yaml
+  - sandbox/service.yaml
+  - sandbox/networkpolicy.yaml
+  - backend/deployment.yaml
+  - backend/service.yaml
+  - backend/ingress.yaml
+  - backend/pdb.yaml
+  - backend/networkpolicy.yaml
+  - frontend/deployment.yaml
+  - frontend/service.yaml
+  - frontend/ingress.yaml
+  - frontend/networkpolicy.yaml
+  # NOTE: backend/secret.example.yaml is intentionally NOT listed here.
+  # Create the real Secret out-of-band with `kubectl create secret`.
+
+# ConfigMap generated from main_agent/config.yaml. Kustomize adds a content hash
+# to the name (e.g., backend-config-7m2k4f9), so any change to config.yaml
+# produces a new ConfigMap name → Deployment reference updates → rolling restart.
+#
+# The file lives outside this kustomization root, which Kustomize blocks by
+# default. Render with `--load-restrictor=LoadRestrictionsNone`, e.g.:
+#   kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/k8s/overlays/dev | kubectl apply -f -
+configMapGenerator:
+  - name: backend-config
+    files:
+      - config.yaml=../../../main_agent/config.yaml
+
+# Image references; overlays should override `newTag` per environment.
+images:
+  - name: pydantic-harness/sandbox
+    newTag: dev
+  - name: pydantic-harness/backend
+    newTag: dev
+  - name: pydantic-harness/frontend
+    newTag: dev

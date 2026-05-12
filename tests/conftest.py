@@ -2,7 +2,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from backend.core.llm import LLMConfig
-from backend.core.memory import InMemoryStore
+from backend.core.conversation import InMemoryConversation
 from main_agent.config import Settings
 from main_agent.server import create_app, _SimpleRegistry
 from main_agent.agent import create_agent
@@ -18,7 +18,7 @@ def app(settings):
     test_app = create_app()
     agent = create_agent(settings)
     test_app.state.agent_registry = _SimpleRegistry(agent)
-    test_app.state.memory = InMemoryStore()
+    test_app.state.memory = InMemoryConversation()
     test_app.state.build_system_prompt = lambda: "test-system-prompt"
     test_app.state.stream_timeout = settings.server.stream_timeout
     return test_app

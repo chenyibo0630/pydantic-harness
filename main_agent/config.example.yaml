@@ -32,6 +32,11 @@ agent:
   workspace: /path/to/your/workspace
   skills:
     - tavily
+  # Curated cross-conversation long-term memory (MEMORY.md / USER.md).
+  # Empty → defaults to main_agent/prompts/ (alongside SYSTEM.md). The
+  # `memory` tool writes there; new conversations inject the snapshot
+  # into the system prompt. load_prompts auto-skips MEMORY.md / USER.md.
+  memory_dir: ""
 
 sandbox:
   # type: local (in-process, dev) | remote (call sandbox container via HTTP)

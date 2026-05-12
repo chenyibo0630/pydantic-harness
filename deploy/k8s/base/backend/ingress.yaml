@@ -1,0 +1,36 @@
+# Ingress for backend with SSE-safe NGINX annotations.
+# These annotations are REQUIRED — without them, NGINX buffers SSE responses
+# and tokens arrive in batches instead of streaming.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backend
+  namespace: pydantic-harness
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: pydantic-harness
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: harness.local
+      http:
+        paths:
+          - path: /chat
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 2648
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 2648

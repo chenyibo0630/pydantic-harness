@@ -1,0 +1,27 @@
+# kind cluster config for local pydantic-harness development.
+#
+# Usage:
+#   kind create cluster --config deploy/k8s/kind-cluster.yaml
+#
+# Maps host 80/443 to the kind node so NGINX Ingress is reachable at http://localhost.
+# Mounts the host workspace into the kind node so PVCs backed by hostPath can use it.
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: pydantic-harness
+
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
+    extraMounts:
+      # Host workspace mounted into the kind node at /mnt/workspace.
+      # A hostPath PVC in dev overlay can target /mnt/workspace to persist
+      # data on the Windows host (D:/develop/learning/harness-workspace).
+      - hostPath: D:/develop/learning/harness-workspace
+        containerPath: /mnt/workspace

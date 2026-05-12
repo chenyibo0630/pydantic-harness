@@ -1,0 +1,14 @@
+# PodDisruptionBudget for backend.
+# minAvailable: 0 — single replica means we cannot guarantee availability
+# during voluntary disruption (node drain, etc.). We accept the brief outage
+# rather than block cluster operations.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend
+  namespace: pydantic-harness
+spec:
+  minAvailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend

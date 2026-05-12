@@ -8,10 +8,10 @@ orphan entries.
 
 from pydantic_ai.messages import ModelMessage
 
-from backend.core.memory.base import EvictedEntry, Memory
+from backend.core.conversation.base import Conversation, EvictedEntry
 
 
-class InMemoryStore(Memory):
+class InMemoryConversation(Conversation):
     def __init__(self) -> None:
         self._messages: dict[str, list[ModelMessage]] = {}
         self._tool_results: dict[str, dict[str, dict[str, str]]] = {}

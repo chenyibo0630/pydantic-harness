@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from backend.core.memory import InMemoryStore, MemoryDeps
+from backend.core.conversation import InMemoryConversation, ConversationDeps
 from backend.core.tools import recall_tool_result
 
 
@@ -22,27 +22,27 @@ class _StubCtx:
 
 
 @pytest.fixture
-def store() -> InMemoryStore:
-    return InMemoryStore()
+def store() -> InMemoryConversation:
+    return InMemoryConversation()
 
 
 @pytest.mark.asyncio
-async def test_recall_returns_cached_content(store: InMemoryStore) -> None:
+async def test_recall_returns_cached_content(store: InMemoryConversation) -> None:
     content = "some long file body" * 50
     await store.put_tool_result("conv-1", "call-a", "read_file", content)
 
-    ctx = _StubCtx(deps=MemoryDeps(memory=store, conversation_id="conv-1"))
+    ctx = _StubCtx(deps=ConversationDeps(store=store, conversation_id="conv-1"))
     assert await recall_tool_result(ctx, "call-a") == content
 
 
 @pytest.mark.asyncio
 async def test_recall_missing_call_id_lists_available(
-    store: InMemoryStore,
+    store: InMemoryConversation,
 ) -> None:
     await store.put_tool_result("conv-1", "call-a", "read_file", "data")
     await store.put_tool_result("conv-1", "call-b", "bash_execute", "log")
 
-    ctx = _StubCtx(deps=MemoryDeps(memory=store, conversation_id="conv-1"))
+    ctx = _StubCtx(deps=ConversationDeps(store=store, conversation_id="conv-1"))
     result = await recall_tool_result(ctx, "call-z")
     assert result.startswith("[error]")
     assert "call-a" in result
@@ -51,22 +51,22 @@ async def test_recall_missing_call_id_lists_available(
 
 @pytest.mark.asyncio
 async def test_recall_when_conversation_has_no_cache(
-    store: InMemoryStore,
+    store: InMemoryConversation,
 ) -> None:
-    ctx = _StubCtx(deps=MemoryDeps(memory=store, conversation_id="conv-empty"))
+    ctx = _StubCtx(deps=ConversationDeps(store=store, conversation_id="conv-empty"))
     result = await recall_tool_result(ctx, "any-id")
     assert result.startswith("[error]")
     assert "never evicted" in result.lower() or "no cached" in result.lower()
 
 
 @pytest.mark.asyncio
-async def test_recall_isolated_per_conversation(store: InMemoryStore) -> None:
+async def test_recall_isolated_per_conversation(store: InMemoryConversation) -> None:
     """Different conversations must not see each other's cached results."""
     await store.put_tool_result("conv-a", "call-x", "tool", "secret-a")
     await store.put_tool_result("conv-b", "call-x", "tool", "secret-b")
 
-    ctx_a = _StubCtx(deps=MemoryDeps(memory=store, conversation_id="conv-a"))
-    ctx_b = _StubCtx(deps=MemoryDeps(memory=store, conversation_id="conv-b"))
+    ctx_a = _StubCtx(deps=ConversationDeps(store=store, conversation_id="conv-a"))
+    ctx_b = _StubCtx(deps=ConversationDeps(store=store, conversation_id="conv-b"))
 
     assert await recall_tool_result(ctx_a, "call-x") == "secret-a"
     assert await recall_tool_result(ctx_b, "call-x") == "secret-b"
@@ -77,4 +77,4 @@ async def test_recall_with_missing_deps_returns_error() -> None:
     ctx = _StubCtx(deps=None)
     result = await recall_tool_result(ctx, "call-a")
     assert result.startswith("[error]")
-    assert "MemoryDeps" in result
+    assert "ConversationDeps" in result

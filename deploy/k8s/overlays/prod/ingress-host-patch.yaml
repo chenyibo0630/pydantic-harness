@@ -1,0 +1,5 @@
+# Replace the dev host `harness.local` with the production hostname.
+# Apply this to all Ingress resources.
+- op: replace
+  path: /spec/rules/0/host
+  value: harness.example.com

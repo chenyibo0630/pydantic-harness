@@ -18,6 +18,12 @@ venv/
 # logs
 logs/
 
+# durable agent long-term memory (live state — never commit personal/user details)
+main_agent/prompts/MEMORY.md
+main_agent/prompts/USER.md
+sub_agents/*/prompts/MEMORY.md
+sub_agents/*/prompts/USER.md
+
 # frontend
 node_modules/
 main_agent/.venv/

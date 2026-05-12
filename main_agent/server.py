@@ -14,13 +14,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.core.llm import build_model
-from backend.core.memory import (
-    EvictingMemory,
-    InMemoryStore,
-    SummarizingMemory,
+from backend.core.conversation import (
+    EvictingConversation,
+    InMemoryConversation,
+    SummarizingConversation,
 )
 from backend.core.sandbox import init_sandbox
 from backend.core.skills import load_skills, init_skill_tool
+from backend.core.tools import init_memory_store
 from backend.gateway.routes import router
 from main_agent.agent import build_system_prompt, create_agent
 from main_agent.config import get_settings
@@ -101,6 +102,12 @@ async def lifespan(app: FastAPI):
     skills_dir = Path(__file__).resolve().parent.parent / "skills"
     skills = load_skills(skills_dir, enabled=settings.agent.skills or None)
     init_skill_tool(skills)
+    memory_dir = (
+        Path(settings.agent.memory_dir)
+        if settings.agent.memory_dir
+        else Path(__file__).parent / "prompts"
+    )
+    init_memory_store(memory_dir)
     if settings.agent.workspace or settings.sandbox.type == "remote":
         init_sandbox(
             settings.agent.workspace,
@@ -114,8 +121,8 @@ async def lifespan(app: FastAPI):
     agent = create_agent(settings, skills=skills)
     app.state.agent_registry = _SimpleRegistry(agent)
     model = build_model(settings.llm)
-    base = InMemoryStore()
-    app.state.memory = SummarizingMemory(EvictingMemory(base), model=model)
+    base = InMemoryConversation()
+    app.state.memory = SummarizingConversation(EvictingConversation(base), model=model)
     app.state.build_system_prompt = lambda: build_system_prompt(settings, skills)
     app.state.stream_timeout = settings.server.stream_timeout
     yield

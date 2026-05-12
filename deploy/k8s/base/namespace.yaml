@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pydantic-harness
+  labels:
+    app.kubernetes.io/part-of: pydantic-harness
+    # Enforce K8s PodSecurity baseline "restricted" — blocks privileged Pods,
+    # requires non-root, drops capabilities, etc.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

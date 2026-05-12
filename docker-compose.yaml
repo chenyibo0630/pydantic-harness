@@ -44,6 +44,11 @@ services:
       - "2648:2648"
     volumes:
       - ./main_agent/config.yaml:/app/main_agent/config.yaml:ro
+      # Bind-mount the prompts dir so the agent's MEMORY.md / USER.md
+      # writes (via the `memory` tool) persist across container rebuilds.
+      # SYSTEM.md / SOUL.md / EXPERIENCE.md ride along — edits on host
+      # show up after a `docker compose restart backend`.
+      - ./main_agent/prompts:/app/main_agent/prompts
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       - PYTHONPATH=/app

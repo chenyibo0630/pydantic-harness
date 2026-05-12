@@ -1,0 +1,36 @@
+# NetworkPolicy: sandbox accepts only backend ingress, denies all egress by default.
+# Note: kind's default CNI (kindnet) does NOT enforce NetworkPolicy. On kind these
+# are documented intent only. On real clusters with Calico/Cilium/etc they apply.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox
+  namespace: pydantic-harness
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      ports:
+        - protocol: TCP
+          port: 8100
+  egress:
+    # DNS only by default. Tools that need outbound (e.g., HTTP fetch) must be
+    # explicitly allowed by adding rules here or in an overlay patch.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

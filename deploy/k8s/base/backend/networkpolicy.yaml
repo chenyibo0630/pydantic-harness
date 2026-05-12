@@ -1,0 +1,61 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend
+  namespace: pydantic-harness
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # From Ingress Controller (assumes ingress-nginx in ingress-nginx namespace).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 2648
+    # From frontend (in case of intra-cluster proxy via frontend nginx).
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: frontend
+      ports:
+        - protocol: TCP
+          port: 2648
+  egress:
+    # To sandbox
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sandbox
+      ports:
+        - protocol: TCP
+          port: 8100
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # LLM provider outbound — open HTTPS to anywhere by default. Tighten via
+    # CNI-level FQDN policy (Cilium) or egress gateway in production.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

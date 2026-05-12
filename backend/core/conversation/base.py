@@ -1,12 +1,13 @@
-"""Memory abstraction — owns every piece of per-conversation persistent state.
+"""Conversation abstraction — per-conversation persistent state.
 
-A ``Memory`` implementation manages three related stores keyed by
+A ``Conversation`` implementation manages three related stores keyed by
 ``conversation_id``:
 
 - **Message history**: ``list[ModelMessage]``. The conversation transcript
   in pydantic-ai's format.
-- **Tool result cache**: bytes of large tool outputs that ``EvictingMemory``
-  moved out of the message history. Keyed by ``(conversation_id, call_id)``.
+- **Tool result cache**: bytes of large tool outputs that
+  ``EvictingConversation`` moved out of the message history. Keyed by
+  ``(conversation_id, call_id)``.
 - **System prompt snapshot**: the prompt text frozen at the first turn of
   this conversation. Subsequent turns reuse this snapshot so the system
   message stays byte-identical across the session, even if the on-disk
@@ -17,6 +18,11 @@ tiers would leave orphans after a restart, so the ABC keeps them together.
 
 ``delete(conversation_id)`` is responsible for clearing **all three** stores
 for the conversation in a single call.
+
+Not to be confused with ``backend.core.memory`` — that module handles
+**cross-conversation long-term memory** (MEMORY.md / USER.md curated notes).
+This module handles **per-conversation short-term state** (chat history,
+tool result cache, frozen system prompt snapshot).
 """
 
 from abc import ABC, abstractmethod
@@ -34,8 +40,13 @@ class EvictedEntry:
     size: int
 
 
-class Memory(ABC):
-    """Abstract conversation memory store + tool result cache."""
+class Conversation(ABC):
+    """Abstract per-conversation state container.
+
+    Holds the message history, the evicted-tool-result cache, and the
+    frozen system-prompt snapshot for one conversation per
+    ``conversation_id``.
+    """
 
     # ── Message history ───────────────────────────────────────────
 

@@ -207,6 +207,35 @@ To reload this exact snapshot, call recall_tool_result(call_id="call_a3f").
 
 LLM 通过 `recall_tool_result(call_id=...)` 工具按需取回原文。工具的 docstring 已经写明何时该用、何时该重调原工具(stale 风险)、何时不该 recall(浪费 token)。`MemoryDeps` 通过 pydantic-ai 的 `RunContext` 注入 `memory + conversation_id + system_prompt`,会话间天然隔离。
 
+### 长期记忆(MEMORY.md / USER.md)
+
+Hermes 风格的跨会话策展记忆。两个文件**和静态 prompt 文件一起放在 `main_agent/prompts/`**:
+- `USER.md` — 用户画像(姓名/角色/偏好/沟通风格)
+- `MEMORY.md` — agent 自己的笔记(环境事实/项目约定/工具坑)
+
+`load_prompts()` 自动跳过这两个文件 —— 它们由 `MemoryStore` 用独立的 USER PROFILE / MEMORY 章节(带 usage 指标头)注入 system prompt,避免双重渲染。
+
+`§` 分隔条目,多行 entry 支持。Agent 通过 `memory(action, target, content?, old_text?)` 工具自主写入:
+
+```python
+memory("add", "user", content="用户偏好中文简洁回答")
+memory("replace", "memory", old_text="Workspace at /old", content="Workspace at /new")
+memory("remove", "user", old_text="过时的偏好")
+```
+
+**Frozen snapshot 模式**:每个新会话首轮把当前磁盘内容注入 system prompt,然后**锁定**整个会话不变。中途 `memory` 工具写入只落盘,不影响当前会话(保住 prompt cache)。下一个新会话才看到更新。
+
+**注入扫描**:写入前过滤 prompt-injection、exfiltration、SSH 后门、不可见 unicode 等模式 —— 因为这些内容下次会进 system prompt,必须把住入口。
+
+**字符上限**(条目数不限,总字节硬约束):
+- `USER.md` 1375 字符
+- `MEMORY.md` 2200 字符
+- 超额拒收,需要先 replace/remove 腾位置
+
+文件路径可通过 `agent.memory_dir` 在 `config.yaml` 覆盖。Docker 部署时 `main_agent/prompts/` 已 bind-mount 到宿主,容器重建不丢笔记。
+
+Sub-agents **不需要长期记忆**,只在 `main_agent` 初始化 MemoryStore;`get_memory_store()` 在未初始化时返回 None,`build_system_prompt` 自动跳过注入。
+
 ### Anthropic prompt cache
 
 当 `llm.type == "anthropic"` 时,自动在 ModelSettings 里打开:

@@ -1,0 +1,10 @@
+# Bump backend resources for production load.
+- op: replace
+  path: /spec/template/spec/containers/0/resources
+  value:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "4"
+      memory: 4Gi

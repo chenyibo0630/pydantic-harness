@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: pydantic-harness-limits
+  namespace: pydantic-harness
+spec:
+  limits:
+    - type: Container
+      # Default requests/limits when a Pod spec omits them.
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: 1
+        memory: 1Gi

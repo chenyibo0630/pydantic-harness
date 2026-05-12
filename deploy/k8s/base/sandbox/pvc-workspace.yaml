@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: workspace-pvc
+  namespace: pydantic-harness
+  labels:
+    app.kubernetes.io/name: sandbox
+    app.kubernetes.io/part-of: pydantic-harness
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName is intentionally omitted so the cluster default applies.
+  # Overlays may patch this for environment-specific storage classes.

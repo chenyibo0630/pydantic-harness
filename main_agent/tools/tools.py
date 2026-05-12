@@ -20,7 +20,7 @@ from backend.core.sandbox import (
     grep_search,
 )
 from backend.core.skills import read_skill
-from backend.core.tools import ask_user, recall_tool_result
+from backend.core.tools import ask_user, memory, recall_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ DEFAULT_TOOLS: list[Callable[..., Any]] = [
     ask_user,
     read_skill,
     recall_tool_result,
+    memory,
 ]
 
 

@@ -7,8 +7,9 @@ Usage in agent.py:
         history_processors=[trim_history(max_messages=20)],
     )
 
-Note: summarization is handled by SummarizingMemory (backend.core.memory.summarizing),
-not by history_processors, to avoid blocking the user-facing response.
+Note: summarization is handled by SummarizingConversation
+(backend.core.conversation.summarizing), not by history_processors, to
+avoid blocking the user-facing response.
 """
 
 from collections.abc import Callable

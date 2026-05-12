@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: pydantic-harness
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: pydantic-harness
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: backend
+  ports:
+    - name: http
+      port: 2648
+      targetPort: 2648

@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+commonAnnotations:
+  pydantic-harness/env: prod
+
+# Production image tags pinned to versioned releases. Bump explicitly per deploy.
+images:
+  - name: pydantic-harness/sandbox
+    newTag: v0.1.0
+  - name: pydantic-harness/backend
+    newTag: v0.1.0
+  - name: pydantic-harness/frontend
+    newTag: v0.1.0
+
+patches:
+  - path: ingress-host-patch.yaml
+    target:
+      kind: Ingress
+  - path: resources-patch.yaml
+    target:
+      kind: Deployment
+      name: backend

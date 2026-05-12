@@ -1,6 +1,6 @@
 """Tests for per-conversation system prompt locking.
 
-The InMemoryStore now keeps a snapshot dict; the gateway's
+The InMemoryConversation now keeps a snapshot dict; the gateway's
 ``stream_agent_response`` resolves load-or-lock semantics on each turn.
 These tests cover the storage layer plus the lock-on-first-turn behavior
 without spinning a real LLM.
@@ -10,25 +10,25 @@ import asyncio
 
 import pytest
 
-from backend.core.memory import (
-    EvictingMemory,
-    InMemoryStore,
-    SummarizingMemory,
+from backend.core.conversation import (
+    EvictingConversation,
+    InMemoryConversation,
+    SummarizingConversation,
 )
 
 
-# ── InMemoryStore: snapshot store ────────────────────────────────────
+# ── InMemoryConversation: snapshot store ────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_snapshot_missing_returns_none() -> None:
-    store = InMemoryStore()
+    store = InMemoryConversation()
     assert await store.get_system_prompt("conv-1") is None
 
 
 @pytest.mark.asyncio
 async def test_snapshot_round_trip() -> None:
-    store = InMemoryStore()
+    store = InMemoryConversation()
     await store.put_system_prompt("conv-1", "frozen prompt v1")
     assert await store.get_system_prompt("conv-1") == "frozen prompt v1"
 
@@ -37,7 +37,7 @@ async def test_snapshot_round_trip() -> None:
 async def test_snapshot_overwrite_within_same_conv() -> None:
     """put_system_prompt must overwrite — callers are responsible for
     calling it only once per conversation."""
-    store = InMemoryStore()
+    store = InMemoryConversation()
     await store.put_system_prompt("conv-1", "v1")
     await store.put_system_prompt("conv-1", "v2")
     assert await store.get_system_prompt("conv-1") == "v2"
@@ -45,7 +45,7 @@ async def test_snapshot_overwrite_within_same_conv() -> None:
 
 @pytest.mark.asyncio
 async def test_snapshot_isolated_per_conversation() -> None:
-    store = InMemoryStore()
+    store = InMemoryConversation()
     await store.put_system_prompt("conv-a", "alpha")
     await store.put_system_prompt("conv-b", "beta")
     assert await store.get_system_prompt("conv-a") == "alpha"
@@ -54,7 +54,7 @@ async def test_snapshot_isolated_per_conversation() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_clears_snapshot() -> None:
-    store = InMemoryStore()
+    store = InMemoryConversation()
     await store.put_system_prompt("conv-1", "frozen")
     await store.delete("conv-1")
     assert await store.get_system_prompt("conv-1") is None
@@ -62,7 +62,7 @@ async def test_delete_clears_snapshot() -> None:
 
 @pytest.mark.asyncio
 async def test_list_conversations_includes_snapshot_only_conv() -> None:
-    store = InMemoryStore()
+    store = InMemoryConversation()
     await store.put_system_prompt("snap-only", "x")
     assert "snap-only" in await store.list_conversations()
 
@@ -72,8 +72,8 @@ async def test_list_conversations_includes_snapshot_only_conv() -> None:
 
 @pytest.mark.asyncio
 async def test_evicting_memory_forwards_snapshot_calls() -> None:
-    base = InMemoryStore()
-    mem = EvictingMemory(base)
+    base = InMemoryConversation()
+    mem = EvictingConversation(base)
     await mem.put_system_prompt("conv-1", "frozen")
     assert await mem.get_system_prompt("conv-1") == "frozen"
     # Verify it actually landed in the inner store, not just the wrapper.
@@ -82,8 +82,8 @@ async def test_evicting_memory_forwards_snapshot_calls() -> None:
 
 @pytest.mark.asyncio
 async def test_summarizing_memory_forwards_snapshot_calls() -> None:
-    base = InMemoryStore()
-    mem = SummarizingMemory(base, model="test")
+    base = InMemoryConversation()
+    mem = SummarizingConversation(base, model="test")
     await mem.put_system_prompt("conv-1", "frozen")
     assert await mem.get_system_prompt("conv-1") == "frozen"
     assert await base.get_system_prompt("conv-1") == "frozen"
@@ -91,10 +91,10 @@ async def test_summarizing_memory_forwards_snapshot_calls() -> None:
 
 @pytest.mark.asyncio
 async def test_decorated_chain_locks_session() -> None:
-    """The full prod chain SummarizingMemory(EvictingMemory(InMemoryStore))
+    """The full prod chain SummarizingConversation(EvictingConversation(InMemoryConversation))
     keeps the snapshot at the deepest layer."""
-    base = InMemoryStore()
-    mem = SummarizingMemory(EvictingMemory(base), model="test")
+    base = InMemoryConversation()
+    mem = SummarizingConversation(EvictingConversation(base), model="test")
     await mem.put_system_prompt("conv-1", "frozen at L0")
     assert await mem.get_system_prompt("conv-1") == "frozen at L0"
     assert await base.get_system_prompt("conv-1") == "frozen at L0"
@@ -114,7 +114,7 @@ async def _resolve_or_lock(store, conv_id, build) -> str:
 
 @pytest.mark.asyncio
 async def test_first_turn_locks_snapshot() -> None:
-    store = InMemoryStore()
+    store = InMemoryConversation()
     builds: list[int] = []
 
     def build() -> str:
@@ -130,7 +130,7 @@ async def test_first_turn_locks_snapshot() -> None:
 async def test_subsequent_turns_reuse_snapshot_even_if_disk_changes() -> None:
     """build() is allowed to return a different value (simulating an edited
     on-disk prompt file). Subsequent turns must NOT see the new value."""
-    store = InMemoryStore()
+    store = InMemoryConversation()
     calls = iter(["v1", "v2-disk-was-edited", "v3-edited-again"])
 
     def build() -> str:
@@ -146,7 +146,7 @@ async def test_subsequent_turns_reuse_snapshot_even_if_disk_changes() -> None:
 @pytest.mark.asyncio
 async def test_new_conversation_re_reads_disk() -> None:
     """A brand-new conv_id must trigger a fresh build()."""
-    store = InMemoryStore()
+    store = InMemoryConversation()
     calls = iter(["v1", "v2"])
 
     def build() -> str:
@@ -161,7 +161,7 @@ async def test_new_conversation_re_reads_disk() -> None:
 @pytest.mark.asyncio
 async def test_deleting_conversation_allows_re_lock_with_fresh_content() -> None:
     """Explicit delete clears the snapshot so the next turn re-reads."""
-    store = InMemoryStore()
+    store = InMemoryConversation()
     calls = iter(["v1", "v2"])
 
     def build() -> str:

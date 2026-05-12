@@ -36,6 +36,10 @@ class AgentConfig(BaseModel):
     system_prompt_file: str = "prompts/SYSTEM.md"
     workspace: str = ""
     skills: list[str] = Field(default_factory=list)
+    # Directory holding the agent's curated long-term memory
+    # (MEMORY.md / USER.md). Empty → defaults to ``main_agent/prompts/``
+    # alongside SYSTEM.md / SOUL.md (load_prompts skips MEMORY/USER files).
+    memory_dir: str = ""
 
 
 class Settings(BaseModel):

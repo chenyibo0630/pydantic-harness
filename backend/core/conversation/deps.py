@@ -1,10 +1,10 @@
-"""Runtime dependencies passed to memory-aware tools via pydantic-ai's
+"""Runtime dependencies passed to conversation-aware tools via pydantic-ai's
 ``RunContext``.
 
-Tools that need access to the per-conversation ``Memory`` (e.g.
-``recall_tool_result``) take ``ctx: RunContext[MemoryDeps]`` as their first
-parameter. The gateway constructs a fresh ``MemoryDeps`` per request and hands
-it to ``Agent.run_stream_events(deps=...)``.
+Tools that need access to the per-conversation ``Conversation`` store (e.g.
+``recall_tool_result``) take ``ctx: RunContext[ConversationDeps]`` as their
+first parameter. The gateway constructs a fresh ``ConversationDeps`` per
+request and hands it to ``Agent.run_stream_events(deps=...)``.
 
 Why a dedicated dataclass instead of a module-level singleton: the
 ``conversation_id`` differs per request, and the same ``Agent`` instance
@@ -16,12 +16,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from backend.core.memory.base import Memory
+from backend.core.conversation.base import Conversation
 
 
 @dataclass(frozen=True)
-class MemoryDeps:
-    """Per-request injection point for memory-aware tools.
+class ConversationDeps:
+    """Per-request injection point for conversation-aware tools.
 
     ``system_prompt`` is the frozen snapshot for this conversation; the
     gateway resolves it (load-or-lock) before each turn. Agents that pass a
@@ -30,6 +30,6 @@ class MemoryDeps:
     message for every LLM call within the conversation.
     """
 
-    memory: Memory
+    store: Conversation
     conversation_id: str
     system_prompt: str = ""

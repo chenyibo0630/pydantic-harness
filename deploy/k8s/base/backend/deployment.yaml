@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: pydantic-harness
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: pydantic-harness
+spec:
+  replicas: 1
+  # Single replica is a HARD constraint: backend keeps in-process memory
+  # (EvictingMemory + tool_cache). HPA / scaling requires externalizing memory first.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+        app.kubernetes.io/part-of: pydantic-harness
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: pydantic-harness/backend:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 2648
+              name: http
+          env:
+            - name: TZ
+              value: Asia/Shanghai
+            - name: PYTHONPATH
+              value: /app
+            - name: SANDBOX_TYPE
+              value: remote
+            - name: SANDBOX_REMOTE_URL
+              value: http://sandbox:8100
+            - name: SANDBOX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: SANDBOX_TOKEN
+                  optional: true
+            # LLM provider key — wired from Secret. Add more keys here per provider.
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DEEPSEEK_API_KEY
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: config
+              mountPath: /app/main_agent/config.yaml
+              subPath: config.yaml
+            - name: tmp
+              mountPath: /tmp
+          # TODO: backend has no /health endpoint yet. Using TCP probe for now.
+          # Add an HTTP /health endpoint to main_agent/server.py and switch these
+          # to httpGet probes once available.
+          livenessProbe:
+            tcpSocket:
+              port: 2648
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            tcpSocket:
+              port: 2648
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: backend-config
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

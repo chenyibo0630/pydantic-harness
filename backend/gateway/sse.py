@@ -18,7 +18,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.run import AgentRunResultEvent
 
-from backend.core.memory import Memory, MemoryDeps
+from backend.core.conversation import Conversation, ConversationDeps
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ async def stream_agent_response(
     agent: Agent,
     message: str,
     *,
-    memory: Memory,
+    memory: Conversation,
     build_system_prompt: Callable[[], str],
     conversation_id: str | None = None,
     timeout: float = 60.0,
@@ -161,8 +161,8 @@ async def stream_agent_response(
             events_iter = agent.run_stream_events(
                 message,
                 message_history=history,
-                deps=MemoryDeps(
-                    memory=memory,
+                deps=ConversationDeps(
+                    store=memory,
                     conversation_id=conv_id,
                     system_prompt=snapshot,
                 ),

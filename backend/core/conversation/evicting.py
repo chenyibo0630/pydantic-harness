@@ -1,11 +1,12 @@
-"""EvictingMemory — moves every large tool result out of the message history.
+"""EvictingConversation — moves every large tool result out of the message history.
 
 Tool results (file reads, bash logs, search dumps) typically dominate token
-usage in long conversations. ``EvictingMemory`` wraps another ``Memory`` and,
-on every ``set()``, walks the **entire** history and replaces every
-``ToolReturnPart`` whose content is at least ``min_size`` characters with a
-short, structured placeholder. The original bytes go into the wrapped
-``Memory``'s tool result cache, keyed by ``(conversation_id, tool_call_id)``.
+usage in long conversations. ``EvictingConversation`` wraps another
+``Conversation`` and, on every ``set()``, walks the **entire** history and
+replaces every ``ToolReturnPart`` whose content is at least ``min_size``
+characters with a short, structured placeholder. The original bytes go into
+the wrapped ``Conversation``'s tool result cache, keyed by
+``(conversation_id, tool_call_id)``.
 
 **Always-evict** semantics — not a sliding window:
 
@@ -41,9 +42,9 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
-from backend.core.memory.base import EvictedEntry, Memory
+from backend.core.conversation.base import Conversation, EvictedEntry
 
-logger = logging.getLogger("memory.evicting")
+logger = logging.getLogger("conversation.evicting")
 
 PLACEHOLDER_MARKER = "[evicted-tool-result]"
 
@@ -77,13 +78,14 @@ def _make_placeholder(part: ToolReturnPart, raw: str) -> str:
     )
 
 
-class EvictingMemory(Memory):
-    """Memory decorator that evicts **every** large tool result on every
-    ``set()`` into the same underlying ``Memory``'s tool result cache.
+class EvictingConversation(Conversation):
+    """Conversation decorator that evicts **every** large tool result on
+    every ``set()`` into the same underlying ``Conversation``'s tool result
+    cache.
 
     Args:
-        store: Underlying memory (handles both message history and tool
-            result cache — same backing tier for both).
+        store: Underlying conversation store (handles message history and
+            tool result cache on the same backing tier).
         min_size: Only evict tool results whose content is at least this many
             characters. Smaller results aren't worth a placeholder (the
             placeholder itself is ~250 chars; evicting a 100-char result
@@ -92,7 +94,7 @@ class EvictingMemory(Memory):
 
     def __init__(
         self,
-        store: Memory,
+        store: Conversation,
         *,
         min_size: int = 256,
     ) -> None:

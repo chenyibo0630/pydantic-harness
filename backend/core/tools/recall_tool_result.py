@@ -1,10 +1,10 @@
 """recall_tool_result tool — reloads a previously evicted tool result.
 
-Lives here (not in the memory module) so all agent-facing tools are gathered
-under a single location. Runtime state — the active ``Memory`` and the
-current ``conversation_id`` — is injected via pydantic-ai's ``RunContext``
-rather than a process-global singleton, so concurrent SSE streams stay
-isolated.
+Lives here (not in the conversation module) so all agent-facing tools are
+gathered under a single location. Runtime state — the active
+``Conversation`` store and the current ``conversation_id`` — is injected via
+pydantic-ai's ``RunContext`` rather than a process-global singleton, so
+concurrent SSE streams stay isolated.
 """
 
 from __future__ import annotations
@@ -13,13 +13,13 @@ import logging
 
 from pydantic_ai import RunContext
 
-from backend.core.memory import MemoryDeps
+from backend.core.conversation import ConversationDeps
 
 logger = logging.getLogger(__name__)
 
 
 async def recall_tool_result(
-    ctx: RunContext[MemoryDeps], call_id: str
+    ctx: RunContext[ConversationDeps], call_id: str
 ) -> str:
     """Reload a tool result that was previously evicted from this
     conversation's history to save context.
@@ -57,13 +57,13 @@ async def recall_tool_result(
     try:
         deps = ctx.deps
         if deps is None:
-            return "[error] recall_tool_result requires MemoryDeps but none was provided."
+            return "[error] recall_tool_result requires ConversationDeps but none was provided."
 
-        content = await deps.memory.get_tool_result(
+        content = await deps.store.get_tool_result(
             deps.conversation_id, call_id
         )
         if content is None:
-            available = await deps.memory.list_tool_results(deps.conversation_id)
+            available = await deps.store.list_tool_results(deps.conversation_id)
             if not available:
                 return (
                     f"[error] No cached tool results in this conversation. "
