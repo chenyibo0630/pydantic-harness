@@ -87,16 +87,30 @@ class EvictingConversation(Conversation):
         store: Underlying conversation store (handles message history and
             tool result cache on the same backing tier).
         min_size: Only evict tool results whose content is at least this many
-            characters. Smaller results aren't worth a placeholder (the
-            placeholder itself is ~250 chars; evicting a 100-char result
-            would inflate, not shrink).
+            characters. Default 2048 — a soft compromise between two
+            constraints:
+
+            * The placeholder itself is ~250 chars; evicting anything
+              shorter than that **inflates** rather than shrinks.
+            * Eagerly evicting every 300-char result (e.g. ``echo done``,
+              short status lines, single-line file reads) forces the model
+              to round-trip ``recall_tool_result`` just to look at trivial
+              prior outputs, which is wasteful and annoying.
+
+            2048 keeps small / medium results inline (the model sees them
+            directly across turns), reserves eviction for genuinely big
+            outputs (full file reads, long bash logs, multi-file grep)
+            where the cache + disk savings dominate. openclaw uses 4000
+            for the analogous "soft-trim" threshold; we bias lower because
+            our placeholder includes a recall mechanism that lets the
+            model decide whether to fetch back.
     """
 
     def __init__(
         self,
         store: Conversation,
         *,
-        min_size: int = 256,
+        min_size: int = 2048,
     ) -> None:
         if min_size <= 0:
             raise ValueError("min_size must be > 0")
