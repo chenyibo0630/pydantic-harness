@@ -37,6 +37,11 @@ agent:
   # `memory` tool writes there; new conversations inject the snapshot
   # into the system prompt. load_prompts auto-skips MEMORY.md / USER.md.
   memory_dir: ""
+  # Per-conversation persistent state (message history, evicted tool
+  # result cache, system prompt snapshot). Empty → /data/.session in
+  # docker, ./.session for local dev. FileConversation creates one
+  # subdirectory per conversation_id.
+  session_dir: ""
 
 sandbox:
   # type: local (in-process, dev) | remote (call sandbox container via HTTP)

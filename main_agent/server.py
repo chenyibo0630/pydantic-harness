@@ -2,6 +2,7 @@
 
 import logging
 import logging.handlers
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.core.llm import build_model
 from backend.core.conversation import (
     EvictingConversation,
-    InMemoryConversation,
+    FileConversation,
     SummarizingConversation,
 )
 from backend.core.sandbox import init_sandbox
@@ -121,7 +122,17 @@ async def lifespan(app: FastAPI):
     agent = create_agent(settings, skills=skills)
     app.state.agent_registry = _SimpleRegistry(agent)
     model = build_model(settings.llm)
-    base = InMemoryConversation()
+    # Disk-backed conversation state. Resolution order:
+    #   1. ``AGENT_SESSION_DIR`` env var (docker-compose sets this to
+    #      ``/data/.session`` which is bind-mounted to host ``./session``)
+    #   2. ``agent.session_dir`` in config.yaml
+    #   3. ``./.session`` relative to cwd (local dev default)
+    session_dir = Path(
+        os.environ.get("AGENT_SESSION_DIR")
+        or settings.agent.session_dir
+        or ".session"
+    )
+    base = FileConversation(session_dir)
     app.state.memory = SummarizingConversation(EvictingConversation(base), model=model)
     app.state.build_system_prompt = lambda: build_system_prompt(settings, skills)
     app.state.stream_timeout = settings.server.stream_timeout

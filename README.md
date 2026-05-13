@@ -10,7 +10,8 @@
 - **多 LLM 提供商**: openai / azure / deepseek / qwen 一套配置
 - **Skills 系统**: 把外部能力(搜索 / PDF / 视频生成)打包成可复用 skill,LLM 自动发现
 - **流式 SSE**: text / tool_call / tool_result / tool_progress(心跳)/ message_end 标准化事件
-- **会话记忆**: 装饰器分层(摘要压缩 + tool result 驱逐 + 按需 recall),上下文不爆
+- **会话状态(短期)**: 装饰器分层 — 同步摘要压缩 + tool result 始终驱逐 + 按需 recall;首轮锁定 system prompt 让 Anthropic prompt cache 整段命中
+- **长期记忆(跨会话)**: hermes 风格 MEMORY.md / USER.md 策展笔记,agent 通过 `memory` 工具自主写入,带注入扫描和字符上限
 
 ## 架构
 
@@ -76,18 +77,21 @@ pydantic-harness/
 │   ├── core/
 │   │   ├── llm/                   # LLM 抽象(build_model)
 │   │   ├── sandbox/               # 沙箱接口 + LocalSandbox + RemoteSandbox
-│   │   ├── prompt/                # Prompt 加载器
-│   │   ├── memory/                # 会话记忆 + tool result 驱逐缓存
-│   │   ├── tools/                 # agent 工具(ask_user / recall_tool_result)
+│   │   ├── prompt/                # Prompt 加载器(load_prompts 自动跳 MEMORY/USER)
+│   │   ├── conversation/          # 短期会话状态(history + tool cache + prompt snapshot)
+│   │   ├── memory/                # 长期记忆 store(MEMORY.md / USER.md + 注入扫描)
+│   │   ├── tools/                 # agent 工具(ask_user / memory / recall_tool_result)
+│   │   ├── hooks/                 # history_processors hooks
 │   │   └── skills/                # Skills 加载与工具暴露
 │   └── gateway/                   # FastAPI 路由 + SSE 流式桥接
 ├── main_agent/                    # 主 Agent
 │   ├── server.py                  # 入口
 │   ├── config.yaml                # 运行配置(LLM / agent / sandbox)
-│   ├── agent.py                   # Agent 定义 + tool 绑定
+│   ├── agent.py                   # Agent 定义 + build_system_prompt
 │   ├── tools/                     # 选择启用的工具列表
-│   └── prompts/                   # 系统提示词(自动拼接所有 .md)
-├── sub_agents/                    # 其他独立子 Agent
+│   └── prompts/                   # 系统提示词(SYSTEM/SOUL/EXPERIENCE/MEMORY_GUIDANCE
+│                                  #   + MEMORY.md/USER.md 由 memory 工具维护)
+├── sub_agents/                    # 其他独立子 Agent(不需要长期记忆)
 │   └── demo_agent/
 ├── sandbox_service/               # 独立沙箱服务(容器化部署)
 │   ├── app.py                     # FastAPI 路由
@@ -98,8 +102,11 @@ pydantic-harness/
 │   ├── tavily/                    # Web 搜索
 │   └── seedance/                  # 视频生成(火山引擎 Ark)
 ├── frontend/                      # React + Vite 前端
+├── deploy/k8s/                    # Kubernetes 部署清单 + kustomize overlays
 └── tests/                         # pytest 测试
 ```
+
+**命名要点**：`backend/core/conversation/` 装短期会话状态（一次对话的消息/工具结果/提示词快照），`backend/core/memory/` 装长期跨会话记忆（MEMORY.md/USER.md）。两个概念都叫 "memory" 太混淆 —— 短期叫 conversation，长期叫 memory。
 
 ## 配置
 
@@ -164,89 +171,150 @@ LLM 可调用的工具(全部经沙箱):
 
 ## 记忆架构
 
-`Memory` ABC 管理三类 per-conversation 状态,保证存储层级一致(in-memory ↔ in-memory,未来的 file ↔ file 不会出现孤儿):
+两个独立但配合的子系统:
 
+| | 短期(`backend/core/conversation/`) | 长期(`backend/core/memory/`) |
+|---|---|---|
+| 抽象 | `Conversation` ABC | `MemoryStore` 类 |
+| 寿命 | 单个 `conversation_id` | 跨会话(磁盘) |
+| 内容 | 消息历史 + tool result cache + system prompt snapshot | 策展笔记 MEMORY.md / USER.md |
+| 写入路径 | 每轮 `sse.py` 自动 set/get | agent 通过 `memory` 工具显式写 |
+| 注入到 prompt | 通过 `ConversationDeps.system_prompt` callable | 通过 `MemoryStore.render_system_block` |
+
+### 短期：Conversation 装饰器栈
+
+`Conversation` ABC 管理三类 per-conversation 状态（保证存储层级一致,in-memory ↔ in-memory,未来的 file ↔ file 不会出现孤儿）：
 - **消息历史**: `list[ModelMessage]` per `conversation_id`
-- **Tool result 缓存**: 被 `EvictingMemory` 驱逐的大工具结果,按 `(conversation_id, call_id)` 寻址
-- **系统提示快照**: 会话首轮锁定的 system prompt,后续轮次复用同一份字节
+- **Tool result 缓存**: 被 `EvictingConversation` 驱逐的大工具结果,按 `(conversation_id, call_id)` 寻址
+- **系统提示快照**: 会话首轮锁定的 system prompt,后续轮复用同一份字节
 
-运行时组装(server.py 启动时):
-
+运行时组装(`server.py` 启动):
 ```
-SummarizingMemory          # 超过阈值后台异步压缩旧消息为摘要
-  └─ EvictingMemory        # 始终把 ≥ min_size 的 ToolReturnPart.content 搬到 cache
-       └─ InMemoryStore    # 进程内 dict(消息 + tool cache + 提示快照 都在这)
+SummarizingConversation          # 同步压缩(per-conv asyncio.Lock,inline summarize)
+  └─ EvictingConversation        # 始终把 ≥ min_size 的 ToolReturnPart.content 搬到 cache
+       └─ FileConversation       # 磁盘持久化(每个 conv_id 一个子目录)
 ```
 
-### 系统提示词:会话粒度锁定
+`InMemoryConversation` 实现仍然存在,用于 unit test —— prod 路径已切到 `FileConversation`。
 
-`Agent.instructions` 是回调,从 `ctx.deps.system_prompt` 取值。Gateway 在每个请求开头 `load-or-lock`:首轮 `build_system_prompt(settings, skills)` 读盘并 `memory.put_system_prompt()`;后续轮直接 `memory.get_system_prompt()` 复用。
+#### 磁盘持久化:`FileConversation`
 
-- 改 `SYSTEM.md` / `SOUL.md` / `EXPERIENCE.md` → 只影响**新会话**,进行中的不受影响
+`FileConversation` 把三类状态都落盘,每个 `conversation_id` 一个子目录:
+```
+{base_dir}/
+└── {conv_id}/
+    ├── messages.jsonl    ← Claude Code 风格,一条 ModelMessage 一行,append-only
+    ├── prompt.txt        ← system prompt snapshot(UTF-8 纯文本)
+    └── tool_results/
+        └── {call_id}.json  ← 每个被驱逐的 tool result 一个文件
+```
+
+**JSONL 写入策略**(`messages.jsonl`):
+- **普通一轮**:`set()` 看 disk 已有 N 行,新 `messages` 长度 > N → 只 append 末尾 `(len(messages) - N)` 行,fsync 落盘,不重写整个文件
+- **压缩 / sanitize**(`new` ≤ disk)→ atomic tempfile + rename 全量重写,确保旧消息不会残留在压缩摘要后面
+
+好处:`tail -f messages.jsonl` 实时看进展;`jq -c '.' messages.jsonl` 逐行处理;`wc -l` 数消息条数。多模态字节内容仍按 pydantic-ai 的 base64 序列化保真。
+
+**写入保证**:
+- 全量重写路径:atomic tempfile + `os.replace`,进程崩溃不留半成品
+- Append 路径:`os.fsync` 强制刷盘,断电不丢已写入
+- 单行损坏的 jsonl 不会让 `get()` 抛错 —— 跳过坏行、保留好行 log warning
+- 完全无法读取的文件返回 None,caller 走"开新会话"分支
+
+**并发保护**:per-conv `threading.Lock`(pydantic-ai 用 worker thread 跑同步工具,可能并发两条会话同时写)。**不用文件锁** —— 单进程部署足够。
+
+**路径解析顺序**:
+1. `AGENT_SESSION_DIR` 环境变量(docker-compose 设为 `/data/.session`)
+2. `agent.session_dir` 配置项
+3. 默认 `./.session` 相对 cwd
+
+Docker 部署:host `./.session` ↔ container `/data/.session` bind mount,容器重建不丢任何会话状态。
+
+#### 系统提示词:会话粒度锁定
+
+`Agent.instructions` 是回调,从 `ctx.deps.system_prompt` 取值。Gateway 在每个请求开头 `load-or-lock`:首轮 `build_system_prompt(settings, skills)` 读盘 + 渲染 MemoryStore blocks,缓存到 conversation;后续轮直接复用。
+
+- 改 `SYSTEM.md` / `SOUL.md` / `EXPERIENCE.md` / `MEMORY_GUIDANCE.md` → 只影响**新会话**,进行中的不受影响
 - 同一会话内 LLM 每次调用看到的 system message 字节完全一致 → prompt cache 可命中
-- `memory.delete(conv_id)` 同时清快照,下次进入重新读盘
+- USER PROFILE / MEMORY 块同样冻结在首轮,中途 `memory` 工具写盘**不**扰动当前会话
 
-### Tool result 驱逐:始终 evict(为了 prompt cache 字节稳定)
+#### Tool result 驱逐:始终 evict
 
-每次 `memory.set()` 都扫描**所有** `ToolReturnPart`(无 keep_recent 窗口),大于 `min_size` 的把 `content` 搬到缓存,原位换成占位符(`tool_call_id` 不动,API 配对不破):
+每次 `set()` 都扫描**所有** `ToolReturnPart`,大于 `min_size`(默认 256 字符)的把 `content` 搬到缓存,原位换成占位符:
 
 ```
 [evicted-tool-result] tool=read_file call_id=call_a3f size=8421chars lines=230
 preview: # README...
-Original tool output was moved to the cache to save context.
-NOTE: this is a snapshot of a past call, NOT current state.
-For fresh data, call the original tool again.
-To reload this exact snapshot, call recall_tool_result(call_id="call_a3f").
+To reload the original bytes (past snapshot):  recall_tool_result(call_id="call_a3f")
+For current state of the underlying source:    call read_file again with the same arguments.
 ```
 
-**为什么"始终 evict"而不是滑动窗口**:滑动窗口意味着驱逐边界每轮向后推一格,prefix 字节随之周期性变化,Anthropic prompt cache 每次都 miss。始终 evict 后,从 turn 2 起 stored prefix 完全 byte-stable,长会话场景 cache 命中率接近 100%。
+**为什么"始终 evict"而不是滑动窗口**:滑动窗口的驱逐边界每轮向后推一格,prefix 字节随之周期性变化,Anthropic prompt cache 每次都 miss。始终 evict 后,从 turn 2 起 stored prefix 完全 byte-stable,长会话 cache 命中率接近 100%。
 
 **代价**:模型在 turn N+1 看不到 turn N 的 tool result 原文,只看到占位符。需要原文时调 `recall_tool_result(call_id=...)`。
 
-### Recall
+#### 同步压缩(per-conv asyncio.Lock)
 
-LLM 通过 `recall_tool_result(call_id=...)` 工具按需取回原文。工具的 docstring 已经写明何时该用、何时该重调原工具(stale 风险)、何时不该 recall(浪费 token)。`MemoryDeps` 通过 pydantic-ai 的 `RunContext` 注入 `memory + conversation_id + system_prompt`,会话间天然隔离。
+`SummarizingConversation` 用每个 `conversation_id` 一把 `asyncio.Lock` 串行化 get/set/delete。超过 `threshold`(默认 20 条)时,压缩**inline 在 `set()` 里跑完才返回** —— 下一轮 `get()` 必须等这一轮压缩完成才能开始。
 
-### 长期记忆(MEMORY.md / USER.md)
+- 跟原 hermes fire-and-forget 比,这里**用户感知延迟换正确性**:`message_end` SSE 事件会延后 3-5 秒(压缩 LLM 调用时间),但消除了「后台 stale write 覆盖新轮」和「delete 时被复活」两种 race
+- 压缩 prompt 用 hermes 实战验证的结构化模板(`## Active Task` / `## Completed Actions` / `## Resolved Questions` / `## Remaining Work` 等),并加"DIFFERENT assistant continues"前置,防止模型把摘要当用户提问继续作答
+- 压缩失败不影响数据:`set()` 先落盘原始历史再 inline 压缩,LLM 抛错时退回原状
 
-Hermes 风格的跨会话策展记忆。两个文件**和静态 prompt 文件一起放在 `main_agent/prompts/`**:
+### 长期：MEMORY.md / USER.md(hermes 风格)
+
+跨会话策展记忆,两个文件**和静态 prompt 文件一起放在 `main_agent/prompts/`**:
 - `USER.md` — 用户画像(姓名/角色/偏好/沟通风格)
 - `MEMORY.md` — agent 自己的笔记(环境事实/项目约定/工具坑)
 
-`load_prompts()` 自动跳过这两个文件 —— 它们由 `MemoryStore` 用独立的 USER PROFILE / MEMORY 章节(带 usage 指标头)注入 system prompt,避免双重渲染。
+`load_prompts()` 自动跳过这两个文件 —— 由 `MemoryStore.render_system_block(target)` 用独立的 USER PROFILE / MEMORY 章节(带 usage 百分比头)注入 system prompt,避免双重渲染。
 
-`§` 分隔条目,多行 entry 支持。Agent 通过 `memory(action, target, content?, old_text?)` 工具自主写入:
-
+Agent 通过 `memory(action, target, content?, old_text?)` 工具自主写入:
 ```python
 memory("add", "user", content="用户偏好中文简洁回答")
 memory("replace", "memory", old_text="Workspace at /old", content="Workspace at /new")
 memory("remove", "user", old_text="过时的偏好")
 ```
 
-**Frozen snapshot 模式**:每个新会话首轮把当前磁盘内容注入 system prompt,然后**锁定**整个会话不变。中途 `memory` 工具写入只落盘,不影响当前会话(保住 prompt cache)。下一个新会话才看到更新。
+**`§` 分隔条目**,多行 entry 支持。substring 匹配 replace/remove,多个匹配返回 previews 让 agent 重试更精确的 `old_text`。
 
-**注入扫描**:写入前过滤 prompt-injection、exfiltration、SSH 后门、不可见 unicode 等模式 —— 因为这些内容下次会进 system prompt,必须把住入口。
+**指引在 system prompt 而非 tool docstring**:`main_agent/prompts/MEMORY_GUIDANCE.md` 描述何时记、何时不记、怎么写(陈述事实 vs 命令式 ✓/✗ 对照)。Tool docstring 只剩 API 表面(action / target / 返回格式)。这样模型**每轮都看到**记忆规则,不只是决定调工具时才看到。
+
+**注入扫描**:写入前过滤 prompt-injection、exfiltration、SSH 后门、不可见 unicode 等 14 种模式 —— 因为内容下次会进 system prompt,必须把住入口。
 
 **字符上限**(条目数不限,总字节硬约束):
 - `USER.md` 1375 字符
 - `MEMORY.md` 2200 字符
 - 超额拒收,需要先 replace/remove 腾位置
 
-文件路径可通过 `agent.memory_dir` 在 `config.yaml` 覆盖。Docker 部署时 `main_agent/prompts/` 已 bind-mount 到宿主,容器重建不丢笔记。
+**并发**:用 process-wide `threading.Lock`(per-target)。pydantic-ai 把同步工具放进 worker 线程跑,这把锁防止两条会话同时调 `memory.add()` 互相覆盖。**不用文件锁** —— 单进程部署不需要跨进程协调,锁文件还会污染 `prompts/` 目录。多 worker 部署再回来引入文件锁。
 
-Sub-agents **不需要长期记忆**,只在 `main_agent` 初始化 MemoryStore;`get_memory_store()` 在未初始化时返回 None,`build_system_prompt` 自动跳过注入。
+**配置**:`agent.memory_dir` 在 `config.yaml` 覆盖默认路径(默认就是 `main_agent/prompts/`)。Docker 部署时 `main_agent/prompts/` 已 bind-mount 到宿主,容器重建不丢笔记。
+
+**Sub-agents 不需要长期记忆**:`init_memory_store` 只在 `main_agent/server.py` 调用;`get_memory_store()` 在未初始化时返回 None,`build_system_prompt` 自动跳过注入。
+
+### Recall 工具
+
+LLM 通过 `recall_tool_result(call_id=...)` 取回被驱逐的旧工具结果。`ConversationDeps`(via pydantic-ai `RunContext`)注入 `store + conversation_id + system_prompt`,会话间天然隔离。
+
+工具 docstring 写明:
+- 用于：需要复看**当时那次调用**的精确内容(继续分析已读片段)
+- 不用于：要**当前状态**(那就重调原工具)、preview 已经够用、最近 history 里还有原文
 
 ### Anthropic prompt cache
 
 当 `llm.type == "anthropic"` 时,自动在 ModelSettings 里打开:
 - `anthropic_cache_tool_definitions=True` — tool 定义 (~3000 t) 缓存
-- `anthropic_cache_instructions=True` — system 提示 (~800 t) 缓存
+- `anthropic_cache_instructions=True` — system 提示 (~800 t,含 USER PROFILE/MEMORY 块) 缓存
 
-两者都是 90% 折扣 × 5 分钟 TTL。配合上面的「系统提示锁定」+「始终 evict」,长会话每轮重复发送的稳定部分基本全部命中 cache。
+两者都是 90% 折扣 × 5 分钟 TTL。配合「系统提示锁定」+「始终 evict」,长会话每轮稳定部分基本全部命中。
 
-调参:
-- `min_size=256`(默认)— 小于这个字符数的 tool result 不值得换成占位符(placeholder 本身约 250 字符)
+### 调参
+
+- `SummarizingConversation`:`threshold=20`(消息数触发压缩)、`keep_recent=10`(压缩后保留最近 N 条原文)
+- `EvictingConversation`:`min_size=256`(小于此值的 tool result 不驱逐,因为 placeholder 自身约 250 字符)
 - 占位符自带 `[evicted-tool-result]` 前缀,二次驱逐是 no-op(幂等)
+- `MemoryStore`:`memory` 2200 / `user` 1375 字符上限(`char_limits` 参数覆盖)
 
 ## 新增 Agent
 
@@ -288,3 +356,6 @@ uv run server.py
 
 - `CLAUDE.md` — 给 AI Coding Agent 的项目向导(架构约定、新增 agent/tool 步骤)
 - `skills/<name>/SKILL.md` — 各 skill 的详细使用说明
+- `docs/k8s-deploy-guide.md` — Kubernetes 部署(`deploy/k8s/` 的清单 + kustomize overlays 怎么用)
+- `docs/k8s-upgrade-guide.md` — 滚动升级 / 回滚操作
+- `main_agent/prompts/MEMORY_GUIDANCE.md` — 注入到 system prompt 的「memory 工具使用规则」(声明事实 vs 命令式的 ✓/✗ 对照)

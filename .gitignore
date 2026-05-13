@@ -24,6 +24,10 @@ main_agent/prompts/USER.md
 sub_agents/*/prompts/MEMORY.md
 sub_agents/*/prompts/USER.md
 
+# Per-conversation persistent state (FileConversation). Mounted to
+# /data/.session in docker. Contains live chat history — keep out of git.
+.session/
+
 # frontend
 node_modules/
 main_agent/.venv/

@@ -40,6 +40,10 @@ class AgentConfig(BaseModel):
     # (MEMORY.md / USER.md). Empty → defaults to ``main_agent/prompts/``
     # alongside SYSTEM.md / SOUL.md (load_prompts skips MEMORY/USER files).
     memory_dir: str = ""
+    # Directory for per-conversation persistent state (message history,
+    # evicted tool result cache, system prompt snapshot). Empty → defaults
+    # to ``/data/.session`` in docker, ``./.session`` for local dev.
+    session_dir: str = ""
 
 
 class Settings(BaseModel):
