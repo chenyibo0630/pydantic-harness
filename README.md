@@ -215,6 +215,17 @@ SummarizingConversation          # 同步压缩(per-conv asyncio.Lock,inline sum
 
 好处:`tail -f messages.jsonl` 实时看进展;`jq -c '.' messages.jsonl` 逐行处理;`wc -l` 数消息条数。多模态字节内容仍按 pydantic-ai 的 base64 序列化保真。
 
+**`instructions` 字段 strip**(去掉系统提示词的重复存储):
+
+pydantic-ai 每次 LLM 调用都把**完整 system prompt 字符串**塞进 `ModelRequest.instructions`(`_agent_graph.py:792`),`all_messages()` 返回的 history 里每条 ModelRequest 都自带一份。直接持久化等于 N 行 × N 份重复(实测真实系统提示 ~5-10KB,20 轮就 ~150KB 浪费)。
+
+`FileConversation._strip_instructions` 在写盘前把 `ModelRequest.instructions` 全部置为 `None`。理由:
+- `prompt.txt` 是 session 锁定后的**单一真相源**,跨轮字节不变
+- pydantic-ai 只在**当前请求**用 `instructions`(`_agent_graph.py:792` 每次重设);**历史请求**的 `.instructions` 只是 merge-equality 检查用的元数据,`None` 不影响行为
+- 跟 hermes(`sessions.system_prompt` 单列,messages 表无该字段)、Claude Code(jsonl 开头单条 system event,后续不重复)同构
+
+效果:每行 ModelRequest 字节从 ~778 降到 ~180(实测样例),长会话省一两个数量级 disk。
+
 **写入保证**:
 - 全量重写路径:atomic tempfile + `os.replace`,进程崩溃不留半成品
 - Append 路径:`os.fsync` 强制刷盘,断电不丢已写入
